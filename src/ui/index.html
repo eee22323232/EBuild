@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https://cdn.modrinth.com; base-uri 'none'; form-action 'none'">
+  <title>EBuild 启动器</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="titlebar"><img class="brand" src="icon.png" width="23" height="23" alt=""><strong>EBuild 启动器</strong></header>
+  <div class="shell">
+    <aside>
+      <nav aria-label="主导航">
+        <button data-page="instances" aria-current="page"><span aria-hidden="true">▦</span>实例</button>
+        <button data-page="downloads"><span aria-hidden="true">↓</span>下载</button>
+        <button data-page="settings"><span aria-hidden="true">⚙</span>设置</button>
+        <button data-page="accounts"><span aria-hidden="true">◎</span>账号</button>
+      </nav>
+      <div class="sidebar-footer"><button id="data-folder" class="text-button">游戏数据目录 ↗</button><span id="active-account">离线档案</span></div>
+    </aside>
+    <div class="workspace">
+      <section class="launchbar" aria-label="当前实例">
+        <div class="launch-select"><label for="current">当前实例</label><select id="current" disabled><option>尚无实例</option></select></div>
+        <button id="launch" class="primary" disabled><span aria-hidden="true">▶</span><span id="launch-label">启动游戏</span></button>
+      </section>
+      <main id="main">
+        <section class="page" id="instances">
+          <div class="heading"><div><h1>实例</h1><p>管理游戏版本、加载器和独立存档。</p></div>
+            <div class="actions"><button id="import-pack">导入整合包</button><button id="add-instance" class="primary">＋ 新建实例</button></div>
+          </div>
+          <div class="columns"><span>名称</span><span>游戏版本</span><span>加载器</span><span>操作</span></div>
+          <div id="instance-list" class="list"></div>
+          <div id="empty-instances" class="empty"><strong>还没有游戏实例</strong><p>安装一个原版或带加载器的版本，也可以导入 .mrpack 整合包。</p></div>
+        </section>
+        <section class="page" id="downloads" hidden>
+          <div class="heading"><div><h1>下载</h1><p>安装 Minecraft 或查找模组、整合包、光影和材质。</p></div></div>
+          <div class="tabs" aria-label="下载来源">
+            <button data-download="game-download" aria-pressed="true">游戏本体</button>
+            <button data-download="modrinth-download" aria-pressed="false">Modrinth 资源</button>
+            <button data-download="curseforge-download" aria-pressed="false">CurseForge</button>
+          </div>
+          <section id="game-download" class="download-panel">
+            <div class="toolbar"><input id="game-query" type="search" placeholder="搜索 Minecraft 版本" aria-label="搜索 Minecraft 版本">
+              <select id="game-type" aria-label="版本类型"><option value="release">正式版</option><option value="snapshot">快照与预发布</option></select><button id="refresh-game">刷新</button>
+            </div>
+            <p class="results-info" id="game-results" role="status"></p>
+            <div class="list" id="game-list"></div><button class="more" id="more-games" hidden>加载更多</button>
+          </section>
+          <section id="modrinth-download" class="download-panel" hidden>
+            <form id="search-form">
+              <div class="toolbar"><input id="resource-query" type="search" placeholder="搜索资源，例如 Fabric API" aria-label="搜索资源"><button type="submit" class="primary">搜索</button></div>
+              <div class="toolbar filters">
+                <input id="resource-game" placeholder="游戏版本" aria-label="游戏版本">
+                <select id="resource-type" aria-label="资源类型"><option value="">全部类型</option><option value="mod">模组</option><option value="modpack">整合包</option><option value="shader">光影</option><option value="resourcepack">材质</option></select>
+                <select id="resource-loader" aria-label="加载器"><option value="">全部加载器</option><option value="fabric">Fabric</option><option value="neoforge">NeoForge</option><option value="forge">Forge</option><option value="quilt">Quilt</option></select>
+                <select id="resource-sort" aria-label="排序"><option value="relevance">相关性</option><option value="downloads">下载量</option><option value="updated">最近更新</option><option value="newest">最新发布</option></select>
+              </div>
+            </form>
+            <p class="results-info" id="resource-results" role="status"></p>
+            <div class="list" id="resource-list"></div><button class="more" id="more-resources" hidden>加载更多</button>
+          </section>
+          <section id="curseforge-download" class="download-panel" hidden><div class="empty"><strong>CurseForge 待接入</strong><p>取得 API 访问权限后启用 CurseForge 和聚合搜索。</p></div></section>
+        </section>
+        <section class="page" id="settings" hidden>
+          <div class="heading"><h1>设置</h1></div>
+          <div class="tabs" aria-label="设置分类">
+            <button data-settings="global-settings" aria-pressed="true">全局游戏设置</button>
+            <button data-settings="appearance-settings" aria-pressed="false">外观</button>
+            <button data-settings="network-settings" aria-pressed="false">网络</button>
+            <button data-settings="advanced-settings" aria-pressed="false">高级</button>
+            <button data-settings="launcher-settings" aria-pressed="false">启动器设置</button>
+          </div>
+          <form id="settings-form">
+            <section class="settings-panel" id="global-settings"><div id="global-fields"></div>
+              <div class="setting-row"><div><strong>Java 管理</strong><p>检查已发现的 Java，或下载指定版本。</p></div><button type="button" id="manage-java">管理 Java</button></div>
+            </section>
+            <section class="settings-panel" id="appearance-settings" hidden>
+              <label class="setting-row"><span><strong>主题</strong></span><select name="theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+            </section>
+            <section class="settings-panel" id="network-settings" hidden>
+              <label class="setting-row"><span><strong>下载并发数</strong><small>同时处理的下载数量，1–32。</small></span><input type="number" name="concurrency" min="1" max="32" required></label>
+              <label class="setting-row"><span><strong>代理模式</strong></span><select name="proxyMode"><option value="system">系统代理</option><option value="direct">直连</option><option value="manual">手动代理</option></select></label>
+              <label class="setting-row" id="manual-proxy"><span><strong>HTTP(S) 代理</strong></span><input name="proxy" placeholder="http://127.0.0.1:7890"></label>
+            </section>
+            <section class="settings-panel" id="advanced-settings" hidden><div id="advanced-fields"></div></section>
+            <section class="settings-panel" id="launcher-settings" hidden>
+              <div class="setting-row"><div><strong>游戏数据目录</strong><p id="current-root" class="path"></p></div><div class="actions"><button type="button" id="change-directory">更改</button><button type="button" id="reset-directory">恢复默认</button></div></div>
+              <div class="setting-row"><div><strong>下载缓存</strong><p>清理临时下载和已缓存的整合包。</p></div><button type="button" id="clear-cache">清理缓存</button></div>
+              <div class="setting-row"><div><strong>EBuild 启动器</strong><p>MIT 开源协议</p></div><span id="app-version"></span></div>
+            </section>
+            <div class="form-actions" id="save-global"><button type="submit" class="primary">保存设置</button></div>
+          </form>
+        </section>
+        <section class="page" id="accounts" hidden>
+          <div class="heading"><div><h1>账号</h1><p>选择启动游戏时使用的玩家档案。</p></div></div>
+          <form id="account-form">
+            <label class="setting-row"><span><strong>启动档案</strong></span><select name="accountMode"><option value="offline">离线档案</option><option value="microsoft">微软正版账号</option></select></label>
+            <label class="setting-row"><span><strong>离线玩家名称</strong></span><input name="username" required pattern="[A-Za-z0-9_]{3,16}" maxlength="16"></label>
+            <label class="setting-row"><span><strong>EBuild 应用 Client ID</strong><small>使用已获 Minecraft Services 批准的应用 ID。</small></span><input name="clientId" placeholder="Microsoft Entra Client ID" spellcheck="false"></label>
+            <div class="setting-row"><div><strong>微软账号</strong><p id="microsoft-name">未登录</p></div><div class="actions"><button type="button" id="microsoft-login">登录微软账号</button><button type="button" id="microsoft-logout" hidden>退出登录</button></div></div>
+            <div class="form-actions"><button type="submit" class="primary">保存账号设置</button></div>
+          </form>
+        </section>
+      </main>
+      <footer><span id="status" role="status">正在载入</span><progress id="progress" aria-label="任务进度" hidden></progress><button id="cancel" hidden>取消任务</button></footer>
+    </div>
+  </div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
+</body>
+</html>
