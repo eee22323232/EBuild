@@ -39,15 +39,17 @@ sealed class Minecraft
         if (saved != null && DateTime.UtcNow - File.GetLastWriteTimeUtc(cache) < TimeSpan.FromMinutes(10)) return saved;
         foreach (var endpoint in (Settings.S("downloadSource") == "bmclapi" ? new[] { MirrorFor(Official), Official } : new[] { Official })) {
             try {
-                var catalog = await net.Json(endpoint, ct).ConfigureAwait(false);
-                var versions = catalog.A("versions").Where(x => new[] { "release", "snapshot" }.Contains(x.S("type"))).ToArray();
-                if (versions.Length == 0) throw new IOException("游戏版本清单为空。");
-                var result = J.Map("latest", catalog.At("latest"), "versions", versions);
+                var result = ParseCatalog(await net.Json(endpoint, ct).ConfigureAwait(false));
                 J.Save(cache, result);
                 return result;
             } catch (Exception) { if (ct.IsCancellationRequested || (endpoint == Official && saved == null)) throw; }
         }
         return saved;
+    }
+    internal static object ParseCatalog(object catalog) {
+        var versions = catalog.A("versions").Where(x => x.S("type") == "release" || x.S("type") == "snapshot").ToArray();
+        if (versions.Length == 0) throw new IOException("游戏版本清单为空。");
+        return J.Map("latest", catalog.At("latest"), "versions", versions);
     }
     internal async Task<object> Loaders(Network net, string version, string loader, CancellationToken ct) {
         J.Id(version);

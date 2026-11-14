@@ -1,3 +1,7 @@
 node_modules/
 dist/
 游戏数据/
+.vs/
+**/bin/
+**/obj/
+*.csproj.user

@@ -4,11 +4,9 @@ using System.Threading;
 
 static class ImportData
 {
-    static void Main(string[] args) {
-        var root = Path.GetFullPath(args[0]);
+    internal static void Run(string root) {
         var old = Path.Combine(root, "old");
         var copy = Path.Combine(root, "copy");
-        if (Directory.Exists(root)) throw new IOException("Use a new verification directory.");
         foreach (var f in new[] { "saves/world/level.dat","mods/my-mod.jar","shaderpacks/test.zip","resourcepacks/test.zip","config/my-mod.json",
             "options.txt",".ebuild.json","versions/game.jar","runtimes/java/bin/java.exe",".natives/native.dll","logs/game.log" }) {
             var dest = J.Inside(old,f);

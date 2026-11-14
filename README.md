@@ -2,6 +2,8 @@
 
 EBuild 是一个 MIT 许可的 Windows x64 Minecraft Java 版桌面启动器。
 
+本分支包含 C# / WebView2 开发版。要从源码运行或贡献代码，请打开 [贡献指南](CONTRIBUTING.md)。以下下载和 Node.js 命令对应 Electron 版。
+
 [下载 dev.0.1.0 预发行版](https://github.com/eee22323232/EBuild/releases/tag/dev.0.1.0)
 
 ![EBuild 的 Modrinth 资源下载界面](docs/screenshot.png)

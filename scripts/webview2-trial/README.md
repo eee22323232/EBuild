@@ -2,11 +2,15 @@
 
 面向 Windows 10 22H2 / Windows 11 x64。沿用 EBuild 网页界面，用 C# 和系统 .NET Framework 4.8 替换 Electron/Node 后端。安装器检测并在需要时在线补装 WebView2；安装 ID、配置目录和游戏目录与 Electron 版隔离。
 
-构建（Windows 自带 .NET Framework 编译器，另需 Inno Setup）：
+Visual Studio 调试、目录结构和自动验证命令见 [贡献指南](../../CONTRIBUTING.md)。
+
+本地测试用 Windows 自带的 .NET Framework 编译器构建：
 
 ~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\webview2-trial\build.ps1 -Output <输出目录> -Cache <构建缓存> -Iscc <ISCC.exe路径>
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\webview2-trial\build.ps1 -Output <输出目录> -Cache <构建缓存>
 ~~~
+
+双击输出目录的 stage 子文件夹里的 EBuild-WebView2.exe，保留同目录的 DLL 和 ui 文件夹。电脑需要已有 WebView2。只有显式添加 -Iscc <ISCC.exe路径> 时才会额外生成安装包。
 
 旧实例从「设置 → 启动器设置 → 导入旧实例副本」导入。选择包含 .ebuild.json 的实例文件夹。程序会创建不同 ID 的实例，复制存档、模组、光影、材质包、配置、截图和常用玩家选项；Java 路径、游戏本体、库、运行时、日志和账号凭据不会复制。游戏文件在首次启动时按需准备。
 

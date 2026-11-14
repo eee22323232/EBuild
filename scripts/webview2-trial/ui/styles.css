@@ -43,7 +43,7 @@ h3 { font-size: 14px; }
 small, p { color: var(--muted); }
 .titlebar { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 17px; background: var(--chrome); color: var(--chrome-text); -webkit-app-region: drag; user-select: none; }
 .brand { display: block; border-radius: 4px; }
-.shell { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; height: calc(100vh - 48px); }
+.shell { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; height: 100vh; }
 .bottom-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px 12px; background: var(--chrome); color: var(--chrome-text); }
 .bottom-nav button { border: 1px solid transparent; background: transparent; display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; }
 .bottom-nav button span { font-size: 18px; width: 18px; text-align: center; line-height: 1; }

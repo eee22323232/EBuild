@@ -8,6 +8,7 @@ using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("EBuild.Verification")]
 
 sealed class Host : Form
 {
@@ -40,22 +41,41 @@ sealed class Host : Form
         // The inbox .NET Framework compiler has legacy TLS defaults.
         System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
         System.Net.ServicePointManager.DefaultConnectionLimit = 32;
-        using (var mutex = new System.Threading.Mutex(false,"Local\\EBuild-WebView2-CSharp-Trial-v1")) {
+        var profile = GetProfile();
+        using (var mutex = new System.Threading.Mutex(false,ProfileMutexName(profile))) {
             if (!mutex.WaitOne(0)) return 0;
-            try { Application.Run(new Host()); }
+            try { Application.Run(new Host(profile)); }
             finally { mutex.ReleaseMutex(); }
         }
         return 0;
     }
-    Host() {
+    static string DefaultProfile() {
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EBuild-WebView2-CSharp");
+    }
+    static string GetProfile() {
+        var configured = Environment.GetEnvironmentVariable("EBUILD_CSHARP_PROFILE");
+        if (!String.IsNullOrWhiteSpace(configured)) return Path.GetFullPath(configured);
+#if DEBUG
+        return DefaultProfile() + "-Debug";
+#else
+        return DefaultProfile();
+#endif
+    }
+    static string ProfileMutexName(string profile) {
+        const string name = "Local\\EBuild-WebView2-CSharp-Trial-v1";
+        var normalized = profile.TrimEnd('\\', '/');
+        if (String.Equals(normalized, DefaultProfile(), StringComparison.OrdinalIgnoreCase)) return name;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+            return name + "-" + Network.Hex(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(normalized.ToUpperInvariant())));
+    }
+    Host(string profile) {
         Text = "EBuild 启动器 · C# 试用版";
         Icon = new Icon(Path.Combine(BaseDir,"ui","icon.ico"));
         ClientSize = new Size(938,575);
         MinimumSize = new Size(750,460);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
-        profile = Environment.GetEnvironmentVariable("EBUILD_CSHARP_PROFILE") ??
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EBuild-WebView2-CSharp");
+        this.profile = profile;
         Controls.Add(browser);
         Controls.Add(bar);
         var label = new CaptionLabel { Text = "EBuild 启动器", ForeColor = Color.White, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill,
@@ -124,7 +144,9 @@ sealed class Host : Form
         web.DownloadStarting += (s,e) => { e.Cancel = true; };
         web.PermissionRequested += (s,e) => { e.State = CoreWebView2PermissionState.Deny; };
         web.WebMessageReceived += Receive;
-        await web.AddScriptToExecuteOnDocumentCreatedAsync(File.ReadAllText(Path.Combine(BaseDir,"bridge.js")));
+        var channels = J.Dump(J.Read(Path.Combine(BaseDir,"channels.json")).Obj());
+        var bridge = File.ReadAllText(Path.Combine(BaseDir,"bridge.js")).Replace("/* CHANNELS */ {}",channels);
+        await web.AddScriptToExecuteOnDocumentCreatedAsync(bridge);
         web.Navigate(Entry);
     }
     void SendStatus(object message) {

@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild", "scripts\webview2-trial\EBuild.csproj", "{57436F9A-4842-4A59-A367-433F74FB7F6C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild.Verification", "scripts\webview2-trial\verify\EBuild.Verification.csproj", "{AE647C45-E427-415A-983B-7203E7EF4261}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AE647C45-E427-415A-983B-7203E7EF4261}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AE647C45-E427-415A-983B-7203E7EF4261}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AE647C45-E427-415A-983B-7203E7EF4261}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AE647C45-E427-415A-983B-7203E7EF4261}.Release|Any CPU.Build.0 = Release|Any CPU
+		{57436F9A-4842-4A59-A367-433F74FB7F6C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{57436F9A-4842-4A59-A367-433F74FB7F6C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{57436F9A-4842-4A59-A367-433F74FB7F6C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{57436F9A-4842-4A59-A367-433F74FB7F6C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
