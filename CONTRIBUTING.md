@@ -1,6 +1,6 @@
 # 参与 EBuild C# 开发
 
-本分支是 EBuild 的 Windows x64 版本，窗口使用 WinForms 和 WebView2，程序运行在 .NET Framework 4.8 上。
+开发分支 `EBuild/webview2-csharp` 是 EBuild 的 Windows x64 版本，窗口使用 WinForms 和 WebView2，程序运行在 .NET Framework 4.8 上。
 
 ## 在 Visual Studio 里运行
 
@@ -19,7 +19,7 @@ dotnet run --project .\scripts\webview2-trial\EBuild.csproj
 
 - [ui](scripts/webview2-trial/ui/) 保存 HTML、CSS 和 JavaScript。改布局、颜色、按钮或资源详情页，通常从这里改。
 - [Host.cs](scripts/webview2-trial/Host.cs) 管窗口和 WebView2。[channels.json](scripts/webview2-trial/channels.json) 定义界面调用，后端在 [Backend.cs](scripts/webview2-trial/Backend.cs) 中分发。
-- [Minecraft.cs](scripts/webview2-trial/Minecraft.cs) 管版本、加载器和启动。[Resources.cs](scripts/webview2-trial/Resources.cs) 管 Modrinth。[Network.cs](scripts/webview2-trial/Network.cs) 管下载和文件校验。[Accounts.cs](scripts/webview2-trial/Accounts.cs) 管微软登录。
+- [Minecraft.cs](scripts/webview2-trial/Minecraft.cs) 管版本、加载器和启动。[Resources.cs](scripts/webview2-trial/Resources.cs) 管 Modrinth 搜索、安装和版本替换。[ModIcons.cs](scripts/webview2-trial/ModIcons.cs) 从 JAR 读取模组图标。[Network.cs](scripts/webview2-trial/Network.cs) 管下载和文件校验。[Accounts.cs](scripts/webview2-trial/Accounts.cs) 管微软登录。
 
 ## 提交前验证
 
