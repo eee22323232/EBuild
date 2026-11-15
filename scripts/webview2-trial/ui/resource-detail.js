@@ -26,6 +26,7 @@ function clearResourceDetail() {
 function showResourceView(view, focus) {
   showPage('resource-detail');
   detailRoot.replaceChildren(view.node);
+  syncIndicators();
   el('main').scrollTop = view.scroll || 0;
   (focus || view.back)?.focus({ preventScroll: true });
   actionState();
@@ -162,10 +163,7 @@ function buildDetail(view, body) {
   const intro = element('article', undefined, 'detail-card detail-intro');
   function toggle(value) {
     view.intro = value;
-    versions.hidden = value;
-    intro.hidden = !value;
-    versionsButton.setAttribute('aria-pressed', String(!value));
-    introButton.setAttribute('aria-pressed', String(value));
+    switchTab([versionsButton, introButton], [versions, intro], value ? 1 : 0);
   }
   const filters = element('div', undefined, 'detail-card detail-filters');
   const gameBar = element('div', undefined, 'detail-game-bar');
@@ -378,11 +376,75 @@ function versionRow(view, group, release, showDependencies) {
 }
 
 async function installDetailVersion(view, group, release) {
-  const id = view.data.project.id;
-  const result = await run(() => api.chooseResourceDestination(id, release.id, selectedInstance()?.id, group.game, group.loader));
-  if (!result || detailStack.at(-1) !== view) return;
-  if (result.mode === 'folder') confirmExport(result);
-  else confirmPlan(result.plan, result.instanceId, result.directory);
+  const project = view.data.project;
+  const folder = { mod: 'mods', shader: 'shaderpacks', resourcepack: 'resourcepacks' }[project.project_type];
+  const current = selectedInstance()?.id;
+  if (!folder) {
+    const result = await run(() => api.chooseResourceDestination(project.id, release.id, current, group.game, group.loader));
+    if (result && detailStack.at(-1) === view) confirmPlan(result.plan);
+    return;
+  }
+  const compatible = instances.filter(item => matchesInstance(release, project.project_type, item));
+  const panel = showModal('选择安装位置');
+  panel.body.append(element('p', project.title + ' · ' + release.version_number, 'destination-release'));
+  const targets = element('select');
+  options(targets, compatible.map(item => [item.id, item.name + ' · ' + instanceVersionLabel(item)]));
+  if (compatible.some(item => item.id === current)) targets.value = current;
+  targets.dataset.mutates = '';
+
+  function isCurrent() { return modal.open && panel.body.isConnected && detailStack.at(-1) === view; }
+  async function choose(useInstanceFolder) {
+    const instanceId = targets.value || current;
+    const result = await run(() => api.chooseResourceDestination(project.id, release.id, instanceId, group.game, group.loader, useInstanceFolder), panel.error);
+    if (!result || !isCurrent()) return;
+    if (result.mode === 'folder') confirmExport(result);
+    else confirmPlan(result.plan, result.instanceId, result.directory);
+  }
+
+  const actions = element('div', undefined, 'form-actions');
+  const browse = button('选择其他文件夹…', () => choose(false));
+  browse.dataset.mutates = '';
+  actions.append(button('取消', closeModal), browse);
+  if (compatible.length) {
+    const preview = element('div', undefined, 'resource-folder-preview');
+    const header = element('div', undefined, 'resource-folder-heading');
+    const identity = element('div');
+    const folderName = element('strong');
+    const directory = element('small', '', 'path');
+    identity.append(folderName, directory);
+    header.append(iconImage('icons/folder.svg', 'resource-folder-icon'), identity);
+    const files = element('div', undefined, 'resource-folder-files');
+    files.setAttribute('aria-live', 'polite');
+    preview.append(header, files);
+    panel.body.append(field('目标实例', targets), preview);
+
+    let revision = 0;
+    async function loadPreview() {
+      const request = ++revision;
+      const target = compatible.find(item => item.id === targets.value);
+      folderName.textContent = target.name + ' / ' + folder;
+      directory.textContent = '';
+      files.replaceChildren(element('p', '正在读取文件夹…'));
+      try {
+        const [info] = await api.instanceResources(target.id, folder);
+        if (request !== revision || !isCurrent()) return;
+        directory.textContent = info.directory;
+        files.replaceChildren(info.files.length ? resourceFileList(info.files, info.icons) : element('p', '此文件夹里还没有文件。'));
+      } catch (error) {
+        if (request === revision && isCurrent()) files.replaceChildren(element('p', error.message));
+      }
+    }
+
+    targets.addEventListener('change', loadPreview);
+    loadPreview();
+    const next = button('继续安装', () => choose(true), 'primary');
+    next.dataset.mutates = '';
+    actions.append(next);
+  } else {
+    panel.body.append(element('p', '没有兼容的实例。可以将文件下载到其他文件夹。', 'results-info'));
+  }
+  panel.body.append(actions);
+  actionState();
 }
 
 function confirmExport(result) {

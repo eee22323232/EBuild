@@ -2,6 +2,7 @@ const installForm = el('game-install-form');
 const installVersion = el('install-version');
 const installSnapshots = el('install-snapshots');
 const installLoaderVersion = el('install-loader-version');
+const installLoaderField = el('install-loader-version-field');
 const installName = el('install-name');
 const installStatus = el('install-configuration-status');
 const installTasks = [];
@@ -48,8 +49,9 @@ async function loadInstallVersions(draft, force = false) {
   draft.ready = false;
   draft.loading = true;
   el('install-options').disabled = true;
-  el('install-loader-version-field').hidden = true;
+  installLoaderField.hidden = true;
   options(installVersion, [['', '正在读取版本…']]);
+  updateSelectPicker(installVersion);
   installStatus.textContent = '';
   el('reload-install-options').hidden = true;
   actionState();
@@ -60,6 +62,7 @@ async function loadInstallVersions(draft, force = false) {
   el('install-options').disabled = !draft.games.length;
   if (!draft.games.length) {
     options(installVersion, [['', '没有可用版本']]);
+    updateSelectPicker(installVersion);
     installStatus.textContent = catalogError || '没有可用的 Minecraft 版本。';
     el('reload-install-options').hidden = false;
     return;
@@ -76,12 +79,16 @@ function fillInstallVersions(selected) {
     const group = element('optgroup');
     group.label = gameVersionType(type);
     for (const item of installDraft.games) {
-      if (item.type === type) group.append(new Option(item.id, item.id));
+      if (item.type !== type) continue;
+      const option = new Option(item.id, item.id);
+      if (item.releaseTime) option.dataset.date = item.releaseTime.slice(0, 10);
+      group.append(option);
     }
     return group;
   }).filter(group => group.childElementCount);
   installVersion.replaceChildren(...groups);
   if (selected && [...installVersion.options].some(option => option.value === selected)) installVersion.value = selected;
+  updateSelectPicker(installVersion);
 }
 
 async function updateInstallLoader(preferred) {
@@ -94,7 +101,14 @@ async function updateInstallLoader(preferred) {
   draft.automaticName = automaticName;
   draft.ready = Boolean(version) && loader === 'vanilla';
   const needsLoader = Boolean(version) && loader !== 'vanilla';
-  el('install-loader-version-field').hidden = !needsLoader;
+  if (installLoaderField.hidden === needsLoader) {
+    const nameField = installName.parentElement;
+    const previousLeft = nameField.getBoundingClientRect().left;
+    installLoaderField.hidden = !needsLoader;
+    contentAnimations.get(nameField)?.cancel();
+    const offset = previousLeft - nameField.getBoundingClientRect().left;
+    if (offset) slideIn(nameField, offset, 0, 220);
+  }
   installLoaderVersion.disabled = true;
   options(installLoaderVersion, []);
   installStatus.textContent = version ? '' : '没有正式版可选。可以打开「显示快照版」。';
@@ -109,7 +123,7 @@ async function updateInstallLoader(preferred) {
       ? list.map(item => [item.id, item.id + (item.stable ? '' : ' · 预发布')])
       : [['', '没有兼容版本']]);
     if (list.length) {
-      installLoaderVersion.value = (list.find(item => item.id === preferred) ?? list.find(item => item.stable) ?? list[0]).id;
+      setControl(installLoaderVersion, (list.find(item => item.id === preferred) ?? list.find(item => item.stable) ?? list[0]).id);
       installLoaderVersion.disabled = false;
       draft.ready = true;
     } else {
@@ -151,9 +165,7 @@ const installStatePresentation = {
 function installTaskCard(task, compact = false) {
   const { input } = task;
   const card = element(compact ? 'article' : 'li', undefined, 'install-task-card');
-  const icon = element('img', undefined, 'install-task-icon');
-  icon.src = 'icons/' + input.loader + '.svg';
-  icon.alt = '';
+  const icon = iconImage(loaderIconPath(input.loader), 'install-task-icon');
   const identity = element('div', undefined, 'install-task-identity');
   identity.append(element('strong', input.name),
     element('small', instanceVersionLabel(input) + (input.loaderVersion ? ' ' + input.loaderVersion : '') +
@@ -248,6 +260,7 @@ async function startGameInstall(task) {
   el('install-complete-toast').hidden = true;
   localBusy = true;
   renderInstallTasks();
+  if (installPageTask === task) slideIn(el('install-progress'), 0, 14, 220);
   try {
     task.instance = await api.createInstance(task.input);
     task.state = task.instance ? 'complete' : 'cancelled';

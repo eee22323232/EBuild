@@ -20,12 +20,21 @@ let localBusy = false;
 let deviceOpen = false;
 let instanceEditor;
 let selectingInstance = false;
+const motionPreference = matchMedia('(prefers-reduced-motion: no-preference)');
+const contentAnimations = new WeakMap();
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
   if (className) node.className = className;
   return node;
+}
+
+function iconImage(source, className) {
+  const image = element('img', undefined, className);
+  image.src = source;
+  image.alt = '';
+  return image;
 }
 
 function button(text, action, className) {
@@ -113,10 +122,12 @@ async function run(action, errorNode) {
 }
 
 function closeModal() {
+  closeSelectPicker();
   if (modal.open) modal.close();
 }
 
 function showModal(title, onClose = closeModal) {
+  closeSelectPicker();
   const wrapper = element('div', undefined, 'dialog-body');
   const header = element('div', undefined, 'dialog-header');
   const heading = element('h2', title);
@@ -134,31 +145,83 @@ function showModal(title, onClose = closeModal) {
   return { body, error };
 }
 
+function slideIn(content, x, y, duration = 250) {
+  if (!motionPreference.matches || !content.getClientRects().length) return;
+  contentAnimations.get(content)?.cancel();
+  contentAnimations.set(content, content.animate([
+    { transform: 'translate(' + x + 'px, ' + y + 'px)', opacity: .5 },
+    { transform: 'translate(0, 0)', opacity: 1 },
+  ], { duration, easing: 'cubic-bezier(.22, .7, .24, 1)' }));
+}
+
+function updateIndicator(bar, active) {
+  if (!active?.offsetWidth) return;
+  bar.style.setProperty('--indicator-x', active.offsetLeft + 'px');
+  bar.style.setProperty('--indicator-width', active.offsetWidth + 'px');
+  bar.classList.add('has-indicator');
+}
+
+function syncIndicators() {
+  for (const bar of document.querySelectorAll('.tabs, .bottom-nav')) {
+    updateIndicator(bar, bar.querySelector('[aria-pressed="true"], [aria-current="page"]'));
+  }
+}
+
+function switchTab(buttons, panels, index) {
+  const previous = buttons.findIndex(tab => tab.getAttribute('aria-pressed') === 'true');
+  for (const [i, tab] of buttons.entries()) {
+    tab.setAttribute('aria-pressed', String(i === index));
+    panels[i].hidden = i !== index;
+  }
+  updateIndicator(buttons[index].parentElement, buttons[index]);
+  if (previous >= 0 && previous !== index) slideIn(panels[index], Math.sign(index - previous) * 18, 0, 210);
+}
+
+function navigationSection(page) {
+  if (page === 'game-install') return installNavigationSection();
+  if (page === 'instance-settings' || page === 'download-tasks') return 'instances';
+  if (page === 'resource-detail') return 'downloads';
+  return page;
+}
+
 function showPage(page) {
   if (instanceEditor && page !== 'instance-settings') {
     leaveInstanceEditor(() => showPage(page));
     return;
   }
   if (page !== 'resource-detail' && page !== 'game-install') clearResourceDetail();
-  for (const item of document.querySelectorAll('.page')) item.hidden = item.id !== page;
-  for (const item of document.querySelectorAll('[data-page]')) {
-    let section = page;
-    if (page === 'game-install') section = installNavigationSection();
-    if (page === 'instance-settings' || page === 'download-tasks') section = 'instances';
-    if (page === 'resource-detail') section = 'downloads';
-    if (item.dataset.page === section) item.setAttribute('aria-current', 'page');
+  closeSelectPicker();
+  const main = el('main');
+  const previousPage = main.querySelector('.page:not([hidden])');
+  const buttons = [...document.querySelectorAll('[data-page]')];
+  const previousTab = buttons.findIndex(item => item.hasAttribute('aria-current'));
+  const section = navigationSection(page);
+  const nextTab = buttons.findIndex(item => item.dataset.page === section);
+  for (const item of main.querySelectorAll('.page')) item.hidden = item.id !== page;
+  for (const [index, item] of buttons.entries()) {
+    if (index === nextTab) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   }
-  el('main').scrollTop = 0;
+  main.scrollTop = 0;
+  syncIndicators();
+  if (previousPage?.id !== page) {
+    contentAnimations.get(previousPage)?.cancel();
+    if (page === 'game-install') slideIn(el(page), 0, -32, 280);
+    else if (previousPage?.id === 'game-install' && previousTab === nextTab) slideIn(el(page), 0, 28, 260);
+    else if (page !== section) slideIn(el(page), 0, -24);
+    else if (previousTab === nextTab) slideIn(el(page), 0, 20);
+    else slideIn(el(page), Math.sign(nextTab - previousTab) * 32, 0);
+  }
   if (page === 'downloads' && !el('game-download').hidden && !catalog) loadCatalog();
+  if (page === 'accounts' && typeof refreshLegacyAccount === 'function') refreshLegacyAccount();
 }
 
 function tabs(attribute, panel, onChange) {
   const buttons = [...document.querySelectorAll('[data-' + attribute + ']')];
-  for (const item of buttons) item.addEventListener('click', () => {
+  const panels = buttons.map(item => document.querySelector(panel + '#' + item.getAttribute('data-' + attribute)));
+  for (const [index, item] of buttons.entries()) item.addEventListener('click', () => {
     const active = item.getAttribute('data-' + attribute);
-    for (const tab of buttons) tab.setAttribute('aria-pressed', String(tab === item));
-    for (const section of document.querySelectorAll(panel)) section.hidden = section.id !== active;
+    switchTab(buttons, panels, index);
     onChange?.(active);
   });
 }
@@ -169,8 +232,7 @@ function renderInstances() {
   el('empty-instances').hidden = Boolean(selected);
   el('other-instances').hidden = !selected;
   if (selected) {
-    el('active-instance-icon').textContent = instanceMark(selected);
-    el('active-instance-icon').dataset.loader = selected.loader;
+    el('active-instance-icon').src = loaderIconPath(selected.loader);
     el('active-instance-name').textContent = selected.name;
     el('active-instance-version').textContent = instanceVersionLabel(selected);
   }
@@ -178,9 +240,7 @@ function renderInstances() {
     const row = button('', () => selectInstance(item.id, row), 'instance-choice');
     row.dataset.instanceId = item.id;
     row.setAttribute('aria-label', '切换到 ' + item.name);
-    const icon = element('span', instanceMark(item), 'instance-icon');
-    icon.dataset.loader = item.loader;
-    icon.setAttribute('aria-hidden', 'true');
+    const icon = iconImage(loaderIconPath(item.loader), 'instance-icon');
     const info = element('span');
     info.append(element('strong', item.name), element('small', instanceVersionLabel(item)));
     row.append(icon, info, element('span', '切换', 'instance-choice-hint'));
@@ -190,7 +250,21 @@ function renderInstances() {
   actionState();
 }
 
-function instanceMark(item) { return ({ vanilla: 'MC', fabric: 'F', neoforge: 'N' })[item.loader] ?? 'MC'; }
+function loaderIconPath(loader) { return 'icons/' + (Object.hasOwn(loaderNames, loader) ? loader : 'vanilla') + '.svg'; }
+
+function resourceFileList(files, icons = {}) {
+  const list = element('ul', undefined, 'resource-file-list');
+  for (const file of [...files].sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }))) {
+    const row = element('li');
+    const fallback = 'icons/resource-file.svg';
+    const source = Object.hasOwn(icons, file) && icons[file].startsWith('data:image/png;base64,') ? icons[file] : fallback;
+    const image = iconImage(source, 'resource-file-icon');
+    if (source !== fallback) image.addEventListener('error', () => { image.src = fallback; }, { once: true });
+    row.append(image, element('span', file));
+    list.append(row);
+  }
+  return list;
+}
 function instanceVersionLabel(item) { return 'Minecraft ' + item.version + ' · ' + loaderNames[item.loader]; }
 
 async function refreshInstances() {
@@ -225,7 +299,7 @@ async function loadCatalog(force = false) {
   catalogError = '';
   el('game-results').textContent = '正在读取 Minecraft 版本列表…';
   el('refresh-game').disabled = true;
-  const request = api.catalog().then(value => {
+  const request = api.catalog(force).then(value => {
     if (catalogRequest !== request) return null;
     catalog = value;
     return value;
@@ -254,22 +328,40 @@ function resetCatalog() {
 function renderGameVersions() {
   const query = el('game-query').value.trim().toLowerCase();
   const versions = (catalog?.versions ?? []).filter(item => item.type === el('game-type').value && item.id.toLowerCase().includes(query));
-  const source = catalog?.cached ? '本地缓存' : catalog?.source === 'bmclapi' ? 'BMCLAPI 国内镜像' : 'Mojang 官方源';
-  el('game-results').textContent = catalogError || (catalog ? source + ' · ' + versions.length + ' 个版本' : '正在读取版本列表…');
+  const source = catalog?.source === 'bmclapi' ? 'BMCLAPI 国内镜像' : catalog?.source === 'mojang' ? 'Mojang 官方源' : '';
+  let provenance = source || '来源未知';
+  if (catalog?.cached) provenance = source ? source + '（本地缓存）' : '本地缓存';
+  else if (catalog?.source === 'mojang' && catalog?.preferredSource === 'bmclapi') provenance += '（镜像回退）';
+  el('game-results').textContent = catalogError || (catalog ? '版本列表来源：' + provenance + ' · ' + versions.length + ' 个版本' : '正在读取版本列表…');
   el('more-games').hidden = versions.length <= gameLimit;
   el('game-list').replaceChildren(...versions.slice(0, gameLimit).map(version => {
     const row = element('div', undefined, 'download-row');
+    const identity = element('div', undefined, 'game-version-identity');
+    const icon = element('img');
+    icon.src = 'icons/vanilla.svg';
+    icon.alt = '';
+    icon.width = 28;
+    icon.height = 28;
     const name = element('div');
     name.append(element('strong', version.id), element('small', version.releaseTime.slice(0, 10)));
+    identity.append(icon, name);
     const install = button('安装', () => createInstance(version.id));
     install.dataset.mutates = '';
-    row.append(name, install);
+    row.append(identity, install);
     return row;
   }));
   actionState();
 }
 
 function field(label, control) {
+  if (control instanceof HTMLSelectElement) {
+    const wrapper = element('div', undefined, 'select-field');
+    control.setAttribute('aria-label', label);
+    const caption = element('strong', label);
+    caption.setAttribute('aria-hidden', 'true');
+    wrapper.append(caption, control);
+    return wrapper;
+  }
   const wrapper = element('label');
   wrapper.append(element('strong', label), control);
   return wrapper;
@@ -279,6 +371,7 @@ function setControl(control, value) {
   if (control.type === 'checkbox') control.checked = Boolean(value);
   else if (control.tagName === 'TEXTAREA') control.value = (value ?? []).join('\n');
   else control.value = value ?? '';
+  if (control instanceof HTMLSelectElement) updateSelectPicker(control);
 }
 
 function getControl(control) {
@@ -422,14 +515,13 @@ function editInstance(instance) {
   async function loadMods() {
     modList.replaceChildren(element('p', '正在读取模组…', 'results-info'));
     try {
-      const items = await api.instanceResources(instance.id);
+      const items = await api.instanceResources(instance.id, 'mods');
       if (instanceEditor !== editor) return;
-      const files = items.find(item => item.folder === 'mods')?.files ?? [];
+      const info = items.find(item => item.folder === 'mods');
+      const files = info?.files ?? [];
       const count = element('p', '已安装模组 · ' + files.length, 'results-info');
       if (!files.length) { modList.replaceChildren(count, element('p', '这个实例还没有模组。', 'empty')); return; }
-      const list = element('ul', undefined, 'instance-mod-list');
-      for (const file of files.sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }))) list.append(element('li', file));
-      modList.replaceChildren(count, list);
+      modList.replaceChildren(count, resourceFileList(files, info.icons));
     } catch (error) {
       if (instanceEditor === editor) modList.replaceChildren(element('p', error.message, 'results-info'), button('重试', loadMods));
     }
@@ -446,10 +538,8 @@ function editInstance(instance) {
     .filter(control => !control.disabled).map(control => [control.name, control.type === 'checkbox' ? control.checked : control.value])]);
   editor.saved = editor.snapshot();
   function activate(active) {
-    for (const [section, tab] of tabs) {
-      section.hidden = section !== active;
-      tab.setAttribute('aria-pressed', String(section === active));
-    }
+    const panels = [...tabs.keys()];
+    switchTab([...tabs.values()], panels, panels.indexOf(active));
     actions.hidden = active === mods;
     if (active === mods) loadMods();
   }
@@ -490,8 +580,8 @@ function downloadInstanceMods(instance) {
   for (const panel of document.querySelectorAll('.download-panel')) panel.hidden = panel.id !== 'modrinth-download';
   el('resource-query').value = '';
   el('resource-game').value = instance.version;
-  el('resource-type').value = 'mod';
-  el('resource-loader').value = instance.loader === 'vanilla' ? '' : instance.loader;
+  setControl(el('resource-type'), 'mod');
+  setControl(el('resource-loader'), instance.loader === 'vanilla' ? '' : instance.loader);
   showPage('downloads');
   searchResources();
 }
@@ -577,12 +667,19 @@ function confirmPlan(plan, instanceId, directory) {
     for (const [index, file] of plan.files.entries()) list.append(element('li', file + (index ? '（必需依赖）' : '')));
     panel.body.append(list);
   }
+  const replacements = plan.replacements ?? [];
+  if (replacements.length) {
+    const notice = element('section', undefined, 'mod-replacement');
+    notice.append(element('strong', '将替换以下已安装的文件'), resourceFileList(replacements),
+      element('small', '旧文件会移到实例的 mods-backup 文件夹。'));
+    panel.body.append(notice);
+  }
   const actions = element('div', undefined, 'form-actions');
-  actions.append(button('安装', () => {
+  actions.append(button('取消', closeModal), button(replacements.length ? '替换并安装' : '安装', () => {
     if (!canMutate()) return;
     closeModal();
     run(async () => {
-      const result = await api.install(plan.key);
+      const result = await api.install(plan.key, replacements.length > 0);
       if (!result) return;
       await refreshInstances();
       if (plan.type === 'modpack') showPage('instances');
@@ -592,11 +689,27 @@ function confirmPlan(plan, instanceId, directory) {
   panel.body.append(actions);
 }
 
+async function launchInstance(instance, approvedJava = null) {
+  const result = await run(() => api.start(instance.id, approvedJava));
+  const major = result?.requiredJava;
+  if (!major) return;
+  const panel = showModal('需要 Java ' + major);
+  panel.body.append(element('p', '「' + instance.name + '」需要 Java ' + major + '。本机未找到兼容的版本。'),
+    element('small', '下载的 Java 将保存在启动器的游戏数据目录。'));
+  const actions = element('div', undefined, 'form-actions');
+  actions.append(button('取消', closeModal), button('下载并启动', () => {
+    closeModal();
+    launchInstance(instance, major);
+  }, 'primary'));
+  panel.body.append(actions);
+}
+
 async function manageJava() {
   const panel = showModal('Java 管理');
   const body = element('div', undefined, 'dialog-scroll');
   const actions = element('div', undefined, 'form-actions');
   const select = element('select');
+  select.setAttribute('aria-label', 'Java 版本');
   options(select, [8, 16, 17, 21, 25].map(major => [major, 'Java ' + major]));
   select.value = '21';
   actions.append(select, button('下载或检查', () => {
@@ -650,8 +763,7 @@ function chooseMigration(target) {
 function showAccount() {
   el('microsoft-name').textContent = account?.name ?? '未登录';
   el('microsoft-logout').hidden = !account;
-  el('active-account').textContent = settings.accountMode === 'microsoft'
-    ? '微软 · ' + (account?.name || '未登录') : '离线 · ' + settings.username;
+  if (typeof renderAccountAppearance === 'function') renderAccountAppearance();
 }
 
 function showPreferences() {
@@ -666,13 +778,16 @@ function showPreferences() {
 
 settingsFields(el('global-fields'), gameFields);
 settingsFields(el('advanced-fields'), advancedFields);
+syncIndicators();
+window.addEventListener('resize', syncIndicators);
+document.fonts.ready.then(syncIndicators);
 for (const item of document.querySelectorAll('[data-page]')) item.addEventListener('click', () => showPage(item.dataset.page));
 tabs('download', '.download-panel', tab => {
   if (tab === 'modrinth-download' && !resourceQuery) searchResources();
   if (tab === 'game-download' && !catalog) loadCatalog();
 });
 tabs('settings', '.settings-panel', tab => { el('save-global').hidden = tab === 'launcher-settings'; });
-el('launch').addEventListener('click', () => { const item = selectedInstance(); if (item) run(() => api.start(item.id)); });
+el('launch').addEventListener('click', () => { const item = selectedInstance(); if (item) launchInstance(item); });
 el('edit-active-instance').addEventListener('click', () => { const item = selectedInstance(); if (item) editInstance(item); });
 el('cancel').addEventListener('click', () => {
   if (!cancelGameInstall()) report(() => api.cancel());

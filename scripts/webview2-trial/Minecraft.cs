@@ -33,18 +33,24 @@ sealed class Minecraft
     Task Fetch(Network net, object spec, string target, CancellationToken ct) {
         return net.FileTo(spec, target, ct, MirrorFor(spec.S("url")));
     }
-    internal async Task<object> Catalog(Network net, CancellationToken ct) {
+    internal async Task<object> Catalog(Network net, CancellationToken ct, bool force = false) {
         var cache = Path.Combine(Root, "versions.json");
+        var preferred = Settings.S("downloadSource");
         var saved = J.Read(cache);
-        if (saved != null && DateTime.UtcNow - File.GetLastWriteTimeUtc(cache) < TimeSpan.FromMinutes(10)) return saved;
-        foreach (var endpoint in (Settings.S("downloadSource") == "bmclapi" ? new[] { MirrorFor(Official), Official } : new[] { Official })) {
+        var cached = saved == null ? null : J.Merge(saved, J.Map("cached", true));
+        if (!force && cached != null && saved.S("preferredSource") == preferred &&
+            DateTime.UtcNow - File.GetLastWriteTimeUtc(cache) < TimeSpan.FromMinutes(10)) return cached;
+        var endpoints = preferred == "bmclapi" ? new[] { MirrorFor(Official), Official } : new[] { Official };
+        foreach (var endpoint in endpoints) {
             try {
-                var result = ParseCatalog(await net.Json(endpoint, ct).ConfigureAwait(false));
+                var catalog = ParseCatalog(await net.Json(endpoint, ct).ConfigureAwait(false));
+                var source = endpoint == Official ? "mojang" : "bmclapi";
+                var result = J.Merge(catalog, J.Map("source", source, "preferredSource", preferred));
                 J.Save(cache, result);
                 return result;
-            } catch (Exception) { if (ct.IsCancellationRequested || (endpoint == Official && saved == null)) throw; }
+            } catch (Exception) { if (ct.IsCancellationRequested || (endpoint == Official && cached == null)) throw; }
         }
-        return saved;
+        return cached;
     }
     internal static object ParseCatalog(object catalog) {
         var versions = catalog.A("versions").Where(x => x.S("type") == "release" || x.S("type") == "snapshot").ToArray();
@@ -108,9 +114,21 @@ sealed class Minecraft
         }
         return 0;
     }
+    internal async Task<string> FindJava(int major, string custom, CancellationToken ct) {
+        foreach (var exe in JavaCandidates(custom).Distinct(StringComparer.OrdinalIgnoreCase)) {
+            ct.ThrowIfCancellationRequested();
+            if (await JavaMajor(exe, ct) == major) return exe;
+        }
+        return null;
+    }
     internal async Task<string> Java(Network net, int major, string custom, Action<string,string,int,int> progress, CancellationToken ct) {
-        foreach (var exe in JavaCandidates(custom).Distinct(StringComparer.OrdinalIgnoreCase)) if (await JavaMajor(exe, ct) == major) return exe;
+        var installed = await FindJava(major, custom, ct);
+        if (installed != null) return installed;
         if (custom.Length != 0) throw new IOException("选定的 Java 版本不匹配，游戏需要 Java " + major + "。");
+        return await DownloadJava(net, major, progress, ct);
+    }
+    internal async Task<string> DownloadJava(Network net, int major, Action<string,string,int,int> progress, CancellationToken ct) {
+        ct.ThrowIfCancellationRequested();
         progress("java", "正在下载 Java " + major, 0, 0);
         var api = "https://api.adoptium.net/v3/assets/latest/" + major + "/hotspot?architecture=x64&image_type=jre&os=windows&vendor=eclipse";
         var pkg = (await net.Json(api, ct)).A().FirstOrDefault().At("binary").At("package");
@@ -160,7 +178,7 @@ sealed class Minecraft
         internal object Spec;
         internal string Target;
     }
-    async Task<Prepared> Prepare(Network net, object instance, string dir, object effective, Action<string,string,int,int> progress, CancellationToken ct) {
+    internal async Task<object> ReadBaseVersion(Network net, object instance, CancellationToken ct) {
         var version = J.Id(instance.S("version"));
         var jsonFile = J.Inside(Game, "versions/" + version + "/" + version + ".json");
         if (!File.Exists(jsonFile)) {
@@ -168,13 +186,22 @@ sealed class Minecraft
             if (manifest == null) throw new IOException("无法找到 Minecraft " + version + " 的版本清单。");
             await Fetch(net, manifest, jsonFile, ct);
         }
-        var baseSpec = J.Read(jsonFile);
+        return J.Read(jsonFile);
+    }
+    internal static int RequiredJavaMajor(object baseSpec) {
+        var major = baseSpec.At("javaVersion").I("majorVersion", 8);
+        if (major <= 0) throw new IOException("游戏版本清单中的 Java 版本无效。");
+        return major;
+    }
+    async Task<Prepared> Prepare(Network net, object instance, object baseSpec, string dir, object effective, string java,
+        Action<string,string,int,int> progress, CancellationToken ct) {
+        var version = J.Id(instance.S("version"));
         var asset = baseSpec.At("assetIndex");
         var indexId = J.Id(asset.S("id"));
         var index = J.Inside(Assets, "indexes/" + indexId + ".json");
         await Fetch(net, asset, index, ct);
-        var p = new Prepared { Base = baseSpec, Client = Path.ChangeExtension(jsonFile, "jar"), Native = Path.Combine(dir, ".natives"),
-            AssetsId = indexId, VirtualAssets = J.Inside(Assets, "virtual/" + indexId), Major = baseSpec.At("javaVersion").I("majorVersion", 8) };
+        var p = new Prepared { Base = baseSpec, Client = J.Inside(Game, "versions/" + version + "/" + version + ".jar"), Native = Path.Combine(dir, ".natives"),
+            AssetsId = indexId, VirtualAssets = J.Inside(Assets, "virtual/" + indexId), Major = RequiredJavaMajor(baseSpec) };
         var jobs = new List<FileJob>();
         var natives = new List<Tuple<string,string[]>>();
         jobs.Add(new FileJob { Spec = baseSpec.At("downloads").At("client"), Target = p.Client });
@@ -219,7 +246,7 @@ sealed class Minecraft
                 var output = J.Inside(dest, data.Key); Directory.CreateDirectory(Path.GetDirectoryName(output));
                 File.Copy(J.Inside(Assets, "objects/" + hash.Substring(0,2) + "/" + hash), output, true);
             }
-        p.Java = await Java(net, p.Major, effective.S("java"), progress, ct);
+        p.Java = java ?? await Java(net, p.Major, effective.S("java"), progress, ct);
         if (instance.S("loader") != "vanilla") await InstallLoader(net, instance, p, progress, ct);
         p.Classpath.Add(p.Client);
         return p;
@@ -268,7 +295,8 @@ sealed class Minecraft
         p.Classpath.InsertRange(0, libraries.Select(x => x.Target));
     }
     internal async Task Install(Network net, object instance, string dir, object effective, Action<string,string,int,int> progress, CancellationToken ct) {
-        await Prepare(net, instance, dir, effective, progress, ct);
+        var baseSpec = await ReadBaseVersion(net, instance, ct);
+        await Prepare(net, instance, baseSpec, dir, effective, null, progress, ct);
     }
     static IEnumerable<string> Arguments(object[] entries, Dictionary<string,object> replacements, bool resolution) {
         foreach (var entry in entries) {
@@ -277,9 +305,9 @@ sealed class Minecraft
             foreach (var value in values) yield return Regex.Replace(value.S(), @"\$\{([^}]+)\}", m => replacements.S(m.Groups[1].Value));
         }
     }
-    internal async Task<Process> Launch(Network net, object instance, string dir, object effective, object account,
-        Action<string,string,int,int> progress, CancellationToken ct) {
-        var p = await Prepare(net, instance, dir, effective, progress, ct);
+    internal async Task<Process> Launch(Network net, object instance, object baseSpec, string dir, object effective, object account,
+        string java, Action<string,string,int,int> progress, CancellationToken ct) {
+        var p = await Prepare(net, instance, baseSpec, dir, effective, java, progress, ct);
         byte[] uuid;
         using (var md5 = MD5.Create()) uuid = md5.ComputeHash(Encoding.UTF8.GetBytes("OfflinePlayer:" + effective.S("username")));
         uuid[6] = (byte)((uuid[6] & 15) | 48); uuid[8] = (byte)((uuid[8] & 63) | 128);
@@ -308,7 +336,7 @@ sealed class Minecraft
         string argsFile = null;
         if (p.Major >= 9) {
             argsFile = Path.Combine(dir, ".launch-" + Guid.NewGuid().ToString("N") + ".args");
-            var encoding = p.Major >= 18 ? new UTF8Encoding(false) : Encoding.Default;
+            var encoding = Encoding.Default.CodePage == 65001 ? new UTF8Encoding(false) : Encoding.Default;
             File.WriteAllLines(argsFile, jvm.Select(ArgFile), encoding);
             jvm = new List<string> { "@" + Path.GetFileName(argsFile) };
         }

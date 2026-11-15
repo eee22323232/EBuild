@@ -3,12 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https://cdn.modrinth.com; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https://cdn.modrinth.com https://textures.minecraft.net; base-uri 'none'; form-action 'none'">
   <title>EBuild 启动器</title>
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
+  <script src="select-picker.js" defer></script>
   <script src="game-install.js" defer></script>
   <script src="resource-detail.js" defer></script>
+  <script src="player-preview.js" defer></script>
+  <script src="account-appearance.js" defer></script>
   <script src="ui-trial.js" defer></script>
 </head>
 <body>
@@ -17,12 +20,11 @@
         <section class="page" id="instances" aria-label="实例">
           <div class="instance-task-toolbar"><button type="button" id="open-download-tasks"><img src="icons/download.svg" width="16" height="16" alt="">下载任务<span id="active-download-count" class="download-count" hidden>1</span></button></div>
           <div id="active-instance" class="instance-hero" hidden>
-            <span class="instance-icon" id="active-instance-icon" aria-hidden="true"></span>
+            <img class="instance-icon" id="active-instance-icon" src="icons/vanilla.svg" alt="">
             <div class="instance-summary">
               <p class="instance-eyebrow">当前实例</p>
               <h1 id="active-instance-name" tabindex="-1"></h1>
               <p id="active-instance-version"></p>
-              <p id="active-account"></p>
             </div>
             <div class="instance-hero-actions">
               <button id="launch" class="primary" type="button" disabled><span aria-hidden="true">▶</span><span id="launch-label">启动游戏</span></button>
@@ -38,6 +40,17 @@
             <div id="instance-list" class="list"></div>
             <button id="add-instance" class="instance-add" type="button"><span aria-hidden="true">＋</span>新建实例</button>
           </section>
+          <div class="home-account">
+            <button type="button" id="home-account-card" aria-haspopup="menu" aria-controls="home-account-menu" aria-expanded="false">
+              <canvas id="home-account-avatar" width="48" height="48" aria-hidden="true"></canvas>
+              <span id="home-account-name"></span>
+            </button>
+            <div class="account-menu" id="home-account-menu" role="menu" aria-label="管理玩家档案" hidden>
+              <button type="button" role="menuitem" tabindex="-1" data-profile-action="name">管理名称</button>
+              <button type="button" role="menuitem" tabindex="-1" data-profile-action="skin">管理皮肤</button>
+              <button type="button" role="menuitem" tabindex="-1" data-profile-action="cape">管理披风</button>
+            </div>
+          </div>
         </section>
         <section class="page" id="instance-settings" aria-label="实例设置" hidden>
           <div id="instance-editor"></div>
@@ -50,7 +63,10 @@
           <form id="game-install-form">
             <fieldset class="install-section" id="install-options">
               <div class="install-version-row">
-                <label class="install-field" for="install-version"><strong>Minecraft 版本</strong><select id="install-version" required></select></label>
+                <div class="install-field">
+                  <strong id="install-version-label">Minecraft 版本</strong>
+                  <select id="install-version" aria-labelledby="install-version-label" data-searchable required></select>
+                </div>
                 <label class="check"><input type="checkbox" id="install-snapshots">显示快照版</label>
               </div>
               <div class="install-loader-group" role="radiogroup" aria-labelledby="install-loader-label">
@@ -62,7 +78,7 @@
                 </div>
               </div>
               <div class="install-name-row">
-                <label class="install-field" id="install-loader-version-field" hidden><strong>加载器版本</strong><select id="install-loader-version"></select></label>
+                <div class="install-field" id="install-loader-version-field" hidden><label for="install-loader-version"><strong>加载器版本</strong></label><select id="install-loader-version"></select></div>
                 <label class="install-field"><strong>实例名称</strong><input id="install-name" required maxlength="80"></label>
               </div>
             </fieldset>
@@ -126,12 +142,12 @@
               <div class="setting-row"><div><strong>Java 管理</strong><p>检查已发现的 Java，或下载指定版本。</p></div><button type="button" id="manage-java">管理 Java</button></div>
             </section>
             <section class="settings-panel" id="appearance-settings" hidden>
-              <label class="setting-row"><span><strong>主题</strong></span><select name="theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+              <div class="setting-row"><label for="appearance-theme"><strong>主题</strong></label><select id="appearance-theme" name="theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
             </section>
             <section class="settings-panel" id="network-settings" hidden>
-              <label class="setting-row"><span><strong>游戏本体下载渠道</strong><small>国内镜像不可用时自动尝试 Mojang 官方源。</small></span><select name="downloadSource"><option value="bmclapi">BMCLAPI 国内镜像（默认）</option><option value="mojang">Mojang 官方源</option></select></label>
+              <div class="setting-row"><label for="download-source"><strong>游戏本体下载渠道</strong><small>国内镜像不可用时自动尝试 Mojang 官方源。</small></label><select id="download-source" name="downloadSource"><option value="bmclapi">BMCLAPI 国内镜像（默认）</option><option value="mojang">Mojang 官方源</option></select></div>
               <label class="setting-row"><span><strong>下载并发数</strong><small>同时处理的下载数量，1–32。</small></span><input type="number" name="concurrency" min="1" max="32" required></label>
-              <label class="setting-row"><span><strong>代理模式</strong></span><select name="proxyMode"><option value="system">系统代理</option><option value="direct">直连</option><option value="manual">手动代理</option></select></label>
+              <div class="setting-row"><label for="network-proxy-mode"><strong>代理模式</strong></label><select id="network-proxy-mode" name="proxyMode"><option value="system">系统代理</option><option value="direct">直连</option><option value="manual">手动代理</option></select></div>
               <label class="setting-row" id="manual-proxy"><span><strong>HTTP(S) 代理</strong></span><input name="proxy" placeholder="http://127.0.0.1:7890"></label>
             </section>
             <section class="settings-panel" id="advanced-settings" hidden><div id="advanced-fields"></div></section>
@@ -145,12 +161,37 @@
         </section>
         <section class="page" id="accounts" hidden>
           <div class="heading"><div><h1>账号</h1><p>选择启动游戏时使用的玩家档案。</p></div></div>
-          <form id="account-form">
-            <label class="setting-row"><span><strong>启动档案</strong></span><select name="accountMode"><option value="offline">离线档案</option><option value="microsoft">微软正版账号</option></select></label>
-            <label class="setting-row"><span><strong>离线玩家名称</strong></span><input name="username" required pattern="[A-Za-z0-9_]{3,16}" maxlength="16"></label>
-            <div class="setting-row"><div><strong>微软账号</strong><p id="microsoft-name">未登录</p></div><div class="actions"><button type="button" id="microsoft-login">登录微软账号</button><button type="button" id="microsoft-logout" hidden>退出登录</button></div></div>
-            <div class="form-actions"><button type="submit" class="primary">保存账号设置</button></div>
-          </form>
+          <div class="account-layout">
+            <form id="account-form">
+              <div class="setting-row"><label for="account-mode"><strong>启动档案</strong></label><select id="account-mode" name="accountMode"><option value="offline">离线档案</option><option value="microsoft">微软正版账号</option></select></div>
+              <label class="setting-row"><span><strong>离线玩家名称</strong></span><input name="username" required pattern="[A-Za-z0-9_]{3,16}" maxlength="16"></label>
+              <div class="setting-row"><div><strong>微软账号</strong><p id="microsoft-name">未登录</p></div><div class="actions"><button type="button" id="microsoft-login">登录微软账号</button><button type="button" id="refresh-account-profile" data-mutates hidden>刷新档案</button><button type="button" id="microsoft-logout" hidden>退出登录</button></div></div>
+              <div id="offline-appearance-controls" class="appearance-controls">
+                <div class="appearance-row"><label for="offline-skin-model">手臂模型</label><select id="offline-skin-model" name="offlineSkinModel"><option value="classic">经典</option><option value="slim">纤细</option></select></div>
+                <div class="appearance-row"><span>皮肤</span><div class="actions"><button type="button" id="import-offline-skin" data-mutates>导入 PNG</button><button type="button" id="remove-offline-skin" data-mutates hidden>恢复默认</button></div></div>
+                <div class="appearance-row"><span>披风</span><div class="actions"><button type="button" id="import-offline-cape" data-mutates>导入 PNG</button><button type="button" id="remove-offline-cape" data-mutates hidden>移除</button></div></div>
+                <small>离线皮肤和披风仅在启动器中预览</small>
+              </div>
+              <div id="official-appearance-controls" class="appearance-controls" hidden>
+                <div class="appearance-links">
+                  <button type="button" data-official-profile="name">改名</button>
+                  <button type="button" data-official-profile="skin">换皮肤</button>
+                  <button type="button" data-official-profile="cape">管理披风</button>
+                </div>
+                <small id="official-appearance-note"></small>
+              </div>
+              <div class="form-actions"><button type="submit" class="primary">保存账号设置</button></div>
+            </form>
+            <section class="account-preview" aria-labelledby="account-preview-title">
+              <div><h2 id="account-preview-title" tabindex="-1">角色预览</h2><p id="account-preview-name"></p></div>
+              <canvas id="account-model" width="380" height="365" tabindex="0" aria-label="角色模型，可用方向键旋转" aria-describedby="account-preview-help"></canvas>
+              <div class="preview-views">
+                <button type="button" id="preview-front">正面</button>
+                <button type="button" id="preview-back">背面</button>
+              </div>
+              <small id="account-preview-help">拖动或按方向键旋转</small>
+            </section>
+          </div>
         </section>
       </main>
       <footer><span id="status" role="status">正在载入</span><progress id="progress" aria-label="任务进度" hidden></progress><button id="cancel" hidden>取消任务</button></footer>
@@ -168,5 +209,13 @@
     <button type="button" id="install-toast-close" aria-label="关闭安装提示">×</button>
   </aside>
   <dialog id="modal"><div id="modal-content"></div></dialog>
+  <div id="select-popover" class="select-popover" popover role="group">
+    <input type="search" id="select-search" role="combobox" aria-autocomplete="list"
+      aria-expanded="true" aria-controls="select-results">
+    <div class="select-results-scroll">
+      <div id="select-results" role="listbox"></div>
+      <p id="select-no-results" class="select-no-results" role="status" hidden>没有找到匹配选项。</p>
+    </div>
+  </div>
 </body>
 </html>
