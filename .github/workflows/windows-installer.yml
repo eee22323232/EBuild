@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     branches:
-      - EBuild/webview2-csharp
+      - main
     paths:
       - .github/workflows/windows-installer.yml
       - scripts/webview2-trial/**

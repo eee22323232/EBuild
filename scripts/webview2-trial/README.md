@@ -1,6 +1,6 @@
 # EBuild WebView2 + C# 开发版
 
-开发分支为 `EBuild/webview2-csharp`。启动器面向 Windows 10 22H2 和 Windows 11 x64，通过 WinForms 托管 WebView2，运行在 .NET Framework 4.8 上。默认配置和游戏数据保存在当前 Windows 用户的 `%LOCALAPPDATA%\EBuild-WebView2-CSharp` 目录。
+主线分支为 `main`。启动器面向 Windows 10 22H2 和 Windows 11 x64，通过 WinForms 托管 WebView2，运行在 .NET Framework 4.8 上。默认配置和游戏数据保存在当前 Windows 用户的 `%LOCALAPPDATA%\EBuild-WebView2-CSharp` 目录。
 
 ## 构建并运行
 
@@ -16,7 +16,7 @@ Visual Studio 调试、目录结构和离线验证命令见 [贡献指南](../..
 
 ## GitHub Actions 安装包
 
-构建相关文件推送到 `EBuild/webview2-csharp` 后，[Windows installer 工作流](../../.github/workflows/windows-installer.yml) 会验证对应提交并生成 Windows x64 安装包。每次成功运行都会生成 `EBuild-Windows-x64-Installer` 工件，内含 `.exe` 和 `SHA256SUMS.txt`。发布预发行版时，把该次运行的两个文件上传到 GitHub Releases，并将标签指向该次运行使用的提交。
+构建相关文件推送到 `main` 后，[Windows installer 工作流](../../.github/workflows/windows-installer.yml) 会验证对应提交并生成 Windows x64 安装包。每次成功运行都会生成 `EBuild-Windows-x64-Installer` 工件，内含 `.exe` 和 `SHA256SUMS.txt`。发布预发行版时，把该次运行的两个文件上传到 GitHub Releases，并将标签指向该次运行使用的提交。
 
 构建固定 Inno Setup、简体中文语言文件及 WebView2 SDK 和引导程序的版本或内容，并检查 SHA-256。更新这些依赖时同步更新下载地址及校验值。当前工作流生成未签名安装包。
 

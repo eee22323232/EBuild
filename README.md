@@ -1,8 +1,10 @@
 # EBuild 启动器
 
-EBuild 是一个采用 MIT 许可证的 Windows x64 Minecraft Java 版桌面启动器。本分支 `EBuild/webview2-csharp` 使用 C#、WinForms 和 WebView2，面向 Windows 10 22H2 和 Windows 11 x64。
+EBuild 是一个采用 MIT 许可证的 Minecraft Java 版桌面启动器。主线使用 C#、WinForms 和 WebView2，面向 Windows 10 22H2 和 Windows 11 x64。
 
-Windows x64 安装包和 SHA-256 校验文件见 [GitHub Releases](https://github.com/eee22323232/EBuild/releases)。
+当前主线版本为 **EBuild dev.0.1.2**，以预发行版提供。发布页同时提供 SHA-256 校验文件。
+
+[下载 Windows x64 安装包](https://github.com/eee22323232/EBuild/releases/download/dev.0.1.2/EBuild-dev.0.1.2-Windows-x64-Setup.exe) · [查看 dev.0.1.2 发布说明](https://github.com/eee22323232/EBuild/releases/tag/dev.0.1.2)
 
 ## 当前功能
 

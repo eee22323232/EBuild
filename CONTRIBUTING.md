@@ -1,6 +1,6 @@
 # 参与 EBuild C# 开发
 
-开发分支 `EBuild/webview2-csharp` 是 EBuild 的 Windows x64 版本，窗口使用 WinForms 和 WebView2，程序运行在 .NET Framework 4.8 上。
+`main` 是 EBuild 的开发主线。Windows x64 版本使用 WinForms 和 WebView2，程序运行在 .NET Framework 4.8 上。
 
 ## 在 Visual Studio 里运行
 
