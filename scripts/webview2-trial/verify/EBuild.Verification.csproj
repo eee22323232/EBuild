@@ -7,5 +7,6 @@
   <ItemGroup>
     <ProjectReference Include="..\EBuild.csproj" />
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 </Project>
