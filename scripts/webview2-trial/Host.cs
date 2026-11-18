@@ -43,32 +43,13 @@ sealed class Host : Form, LauncherWindow
         // The inbox .NET Framework compiler has legacy TLS defaults.
         System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
         System.Net.ServicePointManager.DefaultConnectionLimit = 32;
-        var profile = GetProfile();
-        using (var mutex = new System.Threading.Mutex(false,ProfileMutexName(profile))) {
+        var profile = LauncherProfile.Resolve();
+        using (var mutex = new System.Threading.Mutex(false,LauncherProfile.MutexName(profile))) {
             if (!mutex.WaitOne(0)) return 0;
             try { Application.Run(new Host(profile)); }
             finally { mutex.ReleaseMutex(); }
         }
         return 0;
-    }
-    static string DefaultProfile() {
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EBuild-WebView2-CSharp");
-    }
-    static string GetProfile() {
-        var configured = Environment.GetEnvironmentVariable("EBUILD_CSHARP_PROFILE");
-        if (!String.IsNullOrWhiteSpace(configured)) return Path.GetFullPath(configured);
-#if DEBUG
-        return DefaultProfile() + "-Debug";
-#else
-        return DefaultProfile();
-#endif
-    }
-    static string ProfileMutexName(string profile) {
-        const string name = "Local\\EBuild-WebView2-CSharp-Trial-v1";
-        var normalized = profile.TrimEnd('\\', '/');
-        if (String.Equals(normalized, DefaultProfile(), StringComparison.OrdinalIgnoreCase)) return name;
-        using (var sha = System.Security.Cryptography.SHA256.Create())
-            return name + "-" + Network.Hex(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(normalized.ToUpperInvariant())));
     }
     Host(string profile) {
         Text = "EBuild 启动器 · C# 试用版";

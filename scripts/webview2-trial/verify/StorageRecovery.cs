@@ -120,8 +120,12 @@ static class StorageRecovery
         Require(File.ReadAllText(J.Inside(jobDir, "stage/kept.txt")) == "already downloaded", "Restore keeps staging files.");
         // Simulate the process ending between committing the instance and updating its task record.
         J.Save(J.Inside(backend.Root, "instances/" + id + "/.ebuild.json"), J.Merge(input, J.Map("installationId", id)));
+        var edit = J.Map("name", "renamed recovery fixture", "overrides", J.Map("memory", 2048));
+        reopened.Call("instances:edit", new object[] { id, edit }).GetAwaiter().GetResult();
         var completed = reopened.Call("downloads:resume", new object[] { id }).GetAwaiter().GetResult();
         Require(completed.S("id") == id && reopened.Instances().Count() == 1, "Recovery must not create duplicate instances.");
+        Require(completed.S("name") == "renamed recovery fixture" && completed.At("overrides").I("memory") == 2048,
+            "Editing an instance must preserve the link to its outstanding download record.");
         reopened.Call("downloads:remove", new object[] { id }).GetAwaiter().GetResult();
         Require(!Directory.Exists(jobDir) && reopened.Instances().Count() == 1, "Remove task without removing installed instance.");
         Console.WriteLine("PASS: pause/reopen recovery, atomic commit recovery and removal without deleting installed instances.");

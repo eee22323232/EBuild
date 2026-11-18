@@ -24,6 +24,14 @@ dotnet run --project .\scripts\webview2-trial\EBuild.csproj
 
 ## 提交前验证
 
+WPF 界面在 [scripts/wpf](scripts/wpf/)。在 Visual Studio 里将 `EBuild.Wpf` 设为启动项目，或从仓库根目录运行以下命令。
+
+~~~powershell
+dotnet run --project .\scripts\wpf\EBuild.Wpf.csproj
+~~~
+
+WPF 版使用 Windows 自带的 .NET Framework 4.8，读取现有 C# 版的实例和配置。Debug 版使用独立的调试配置目录，也可设置 `EBUILD_CSHARP_PROFILE` 指定另一个目录。
+
 ~~~powershell
 dotnet run --project .\scripts\webview2-trial\verify\EBuild.Verification.csproj
 ~~~

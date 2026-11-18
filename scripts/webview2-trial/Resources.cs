@@ -179,7 +179,7 @@ sealed class Resources
                 selected = Compatible(choice,type,selected) ? selected : all.FirstOrDefault(x => Compatible(choice,type,x));
                 var starting = selected == null ? "" : J.Inside(backend.InstancePath(selected.S("id")), part);
                 if (!useInstanceFolder && starting != "") { J.NoLinks(starting); Directory.CreateDirectory(starting); }
-                var folder = useInstanceFolder ? starting : backend.Folder("选择保存位置", starting);
+                var folder = useInstanceFolder ? starting : backend.Folder("选择保存位置", starting, args.Arg(6) as System.Windows.Forms.IWin32Window);
                 if (folder == "") return null;
                 folder = Path.GetFullPath(folder); J.NoLinks(folder);
                 var matching = useInstanceFolder ? selected : all.FirstOrDefault(x =>

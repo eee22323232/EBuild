@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild", "scripts\webview2-
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild.Verification", "scripts\webview2-trial\verify\EBuild.Verification.csproj", "{AE647C45-E427-415A-983B-7203E7EF4261}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild.Wpf", "scripts\wpf\EBuild.Wpf.csproj", "{AC2CF682-C2B4-4C51-83CC-F9270964A81F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -16,6 +18,10 @@ Global
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AC2CF682-C2B4-4C51-83CC-F9270964A81F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AC2CF682-C2B4-4C51-83CC-F9270964A81F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AC2CF682-C2B4-4C51-83CC-F9270964A81F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AC2CF682-C2B4-4C51-83CC-F9270964A81F}.Release|Any CPU.Build.0 = Release|Any CPU
 		{AE647C45-E427-415A-983B-7203E7EF4261}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{AE647C45-E427-415A-983B-7203E7EF4261}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AE647C45-E427-415A-983B-7203E7EF4261}.Release|Any CPU.ActiveCfg = Release|Any CPU

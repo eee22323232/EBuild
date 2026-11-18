@@ -169,9 +169,9 @@ sealed partial class Backend
             finally { task = null; ContinueLaunches(); }
         }
     }
-    internal string Folder(string title, string initial = "") {
+    internal string Folder(string title, string initial = "", IWin32Window owner = null) {
         using (var dialog = new FolderBrowserDialog { Description = title, SelectedPath = initial, ShowNewFolderButton = true })
-            return dialog.ShowDialog(window) == DialogResult.OK ? dialog.SelectedPath : "";
+            return dialog.ShowDialog(owner ?? window) == DialogResult.OK ? dialog.SelectedPath : "";
     }
     string ChooseFile(string title, string filter) {
         using (var dialog = new OpenFileDialog { Title = title, Filter = filter, CheckFileExists = true, Multiselect = false })
@@ -464,8 +464,9 @@ sealed partial class Backend
                 }).ToArray());
             case "instances:edit":
                 var existing = Instance(id);
-                var edited = Spec(J.Merge(existing,J.Map("name",a.Arg(1).S("name"),"overrides",a.Arg(1).At("overrides"))));
-                if (existing.S("externalPath") != "") edited = J.Merge(edited, ExternalFields(existing));
+                var changes = J.Map("name", a.Arg(1).S("name"), "overrides", a.Arg(1).At("overrides"));
+                var edited = J.Merge(existing, Spec(J.Merge(existing, changes)));
+                edited.Remove("id");
                 J.Save(Path.Combine(InstanceRecord(id),".ebuild.json"),edited);
                 return J.Merge(edited,J.Map("id",id));
             case "instances:create": return await CreateDownload(a.Arg(0), a.Arg(1).S());

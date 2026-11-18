@@ -5,14 +5,19 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
-    <LangVersion>5</LangVersion>
-    <AssemblyName>EBuild-WPF-Prototype</AssemblyName>
+    <LangVersion>7.3</LangVersion>
+    <AssemblyName>EBuild-WPF</AssemblyName>
+    <RootNamespace>EBuild.Native</RootNamespace>
     <ApplicationIcon>..\webview2-trial\ui\icon.ico</ApplicationIcon>
-    <StartupObject>PrototypeWindow</StartupObject>
+    <ApplicationManifest>windows.manifest</ApplicationManifest>
+    <StartupObject>EBuild.Native.Launcher</StartupObject>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\webview2-trial\*.cs" Exclude="..\webview2-trial\Host.cs" />
     <Resource Include="..\webview2-trial\ui\icon.ico" Link="icon.ico" />
+    <Resource Include="..\webview2-trial\ui\icons\*.svg" Link="icons\%(Filename)%(Extension)" />
     <None Include="..\..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" />
     <Reference Include="System.IO.Compression" />
     <Reference Include="System.IO.Compression.FileSystem" />
