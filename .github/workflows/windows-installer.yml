@@ -1,0 +1,62 @@
+name: Windows installer
+
+on:
+  push:
+    branches:
+      - EBuild/webview2-csharp
+    paths:
+      - .github/workflows/windows-installer.yml
+      - scripts/webview2-trial/**
+      - LICENSE
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Check out the source commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run offline verification
+        shell: powershell
+        run: dotnet run --configuration Release --project scripts/webview2-trial/verify/EBuild.Verification.csproj
+
+      - name: Build the Windows x64 installer
+        shell: powershell
+        run: |
+          $innoSetup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.4.exe'
+          $inno = Join-Path $env:RUNNER_TEMP 'Inno Setup 6'
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe'
+          curl.exe -fLsS --retry 2 --connect-timeout 15 --max-time 120 $url -o $innoSetup
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download Inno Setup.' }
+          if ((Get-FileHash -LiteralPath $innoSetup).Hash -ne 'A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C') {
+            throw 'SHA-256 mismatch for Inno Setup.'
+          }
+          $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR="{0}"' -f $inno
+          $process = Start-Process -FilePath $innoSetup -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Inno Setup installation failed ($($process.ExitCode))." }
+
+          $output = Join-Path $env:RUNNER_TEMP 'EBuild-build'
+          $cache = Join-Path $env:RUNNER_TEMP 'EBuild-dependencies'
+          & .\scripts\webview2-trial\build.ps1 -Output $output -Cache $cache -Iscc (Join-Path $inno 'ISCC.exe')
+
+          $installers = @(Get-ChildItem -LiteralPath $output -File -Filter 'EBuild-*-Windows-x64-Setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected one Windows x64 installer.' }
+          $installer = $installers[0]
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $package = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'EBuild-installer')
+          Copy-Item -LiteralPath $installer.FullName -Destination $package.FullName
+          Set-Content -LiteralPath (Join-Path $package.FullName 'SHA256SUMS.txt') -Encoding ASCII -Value "$hash  $($installer.Name)"
+
+      - name: Upload the installer and checksum
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: EBuild-Windows-x64-Installer
+          path: ${{ runner.temp }}/EBuild-installer/
+          compression-level: 0
+          if-no-files-found: error

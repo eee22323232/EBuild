@@ -23,9 +23,11 @@ function clearResourceDetail() {
   searchReturn = undefined;
 }
 
-function showResourceView(view, focus) {
+function showResourceView(view, focus, returning = false) {
+  const alreadyInDetail = !detailRoot.hidden;
   showPage('resource-detail');
   detailRoot.replaceChildren(view.node);
+  if (alreadyInDetail) slideIn(view.node, 0, returning ? 19 : -19);
   syncIndicators();
   el('main').scrollTop = view.scroll || 0;
   (focus || view.back)?.focus({ preventScroll: true });
@@ -36,7 +38,7 @@ function backFromResource() {
   const previous = detailStack.pop();
   const view = detailStack.at(-1);
   if (view) {
-    showResourceView(view, previous?.anchor);
+    showResourceView(view, previous?.anchor, true);
   } else {
     const restore = searchReturn;
     searchReturn = undefined;
@@ -67,7 +69,7 @@ function isStableGame(version, tags) {
 }
 
 function installablePack(release) {
-  return release.loaders.some(loader => ['minecraft', 'vanilla', 'fabric', 'neoforge'].includes(loader));
+  return release.loaders.some(loader => loader === 'minecraft' || Object.hasOwn(loaderNames, loader));
 }
 
 function matchesInstance(release, type, instance) {
@@ -206,7 +208,7 @@ function buildDetail(view, body) {
   function selectGame(game, exact) {
     view.exact = exact;
     view.game = game;
-    update();
+    update(true);
   }
   function addChip(strip, game, exact, label) {
     const snapshot = strip === snapshots;
@@ -219,10 +221,10 @@ function buildDetail(view, body) {
   for (const game of gameValues) addChip(games, game, false, game);
   addChip(snapshots, '', false, '全部快照');
   for (const game of snapshotValues) addChip(snapshots, game, true, game);
-  loader.addEventListener('change', () => { view.loader = loader.value; update(); });
-  onlyCompatible.addEventListener('change', () => { view.compatible = onlyCompatible.checked; update(); });
+  loader.addEventListener('change', () => { view.loader = loader.value; update(true); });
+  onlyCompatible.addEventListener('change', () => { view.compatible = onlyCompatible.checked; update(true); });
   const sorted = releases.slice().sort((a, b) => String(b.date_published).localeCompare(String(a.date_published)));
-  function update() {
+  function update(animate = false) {
     const instance = selectedInstance();
     onlyCompatible.disabled = !instance;
     if (!instance) view.compatible = false;
@@ -237,7 +239,9 @@ function buildDetail(view, body) {
       chip.setAttribute('aria-pressed', String(view.game === game && view.exact === exact && view.snapshots === snapshot));
     }
     const groups = groupVersions(sorted, project.project_type, view);
-    list.replaceChildren(...groups.map((group, index) => versionGroup(view, group, index === 0)));
+    const rows = groups.map((group, index) => versionGroup(view, group, index === 0));
+    list.replaceChildren(...rows);
+    if (animate) animateVisibleRows(list, rows);
     if (!groups.length) list.append(element('p', '没有匹配的发布版本。可以调整游戏版本、加载器或兼容筛选。', 'empty'));
     actionState();
   }
@@ -353,8 +357,8 @@ function versionRow(view, group, release, showDependencies) {
   info.append(name, element('small', [release.version_number, downloadsText(release.downloads), date && '发布于 ' + date,
     type !== 'modpack' && (compatible ? '有兼容实例' : '无兼容实例，可另存')].filter(Boolean).join(' · ')));
   const actions = element('div', undefined, 'detail-actions');
-  if (!compatible && type !== 'modpack' && ['fabric', 'neoforge', '', 'vanilla', 'minecraft'].includes(group.loader)) {
-    const create = button('新建匹配实例', () => createInstance(group.game, group.loader || 'vanilla'));
+  if (!compatible && type !== 'modpack' && (!group.loader || group.loader === 'minecraft' || Object.hasOwn(loaderNames, group.loader))) {
+    const create = button('新建匹配实例', () => createInstance(group.game, group.loader === 'minecraft' ? 'vanilla' : group.loader || 'vanilla'));
     create.dataset.mutates = '';
     actions.append(create);
   }
@@ -384,7 +388,7 @@ async function installDetailVersion(view, group, release) {
     if (result && detailStack.at(-1) === view) confirmPlan(result.plan);
     return;
   }
-  const compatible = instances.filter(item => matchesInstance(release, project.project_type, item));
+  const compatible = instances.filter(item => !item.externalMissing && matchesInstance(release, project.project_type, item));
   const panel = showModal('选择安装位置');
   panel.body.append(element('p', project.title + ' · ' + release.version_number, 'destination-release'));
   const targets = element('select');

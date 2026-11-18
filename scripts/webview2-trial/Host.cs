@@ -18,6 +18,8 @@ sealed class Host : Form
     readonly WebView2 browser = new WebView2 { Dock = DockStyle.Fill };
     readonly Panel bar = new CaptionPanel { Dock = DockStyle.Top, Height = 36, BackColor = Blue };
     readonly string profile;
+    CoreWebView2Environment webEnvironment;
+    bool closingWebView, closeReady;
     Backend backend;
     Button minimize;
     sealed class CaptionPanel : Panel {
@@ -130,6 +132,7 @@ sealed class Host : Form
         var options = new CoreWebView2EnvironmentOptions("--disk-cache-size=2097152 --media-cache-size=1048576");
         var env = await CoreWebView2Environment.CreateAsync(null,Path.Combine(profile,"WebView2"),options);
         await browser.EnsureCoreWebView2Async(env);
+        webEnvironment = env;
         var web = browser.CoreWebView2;
         web.Settings.AreHostObjectsAllowed = false;
         web.Settings.AreDevToolsEnabled = false;
@@ -150,7 +153,7 @@ sealed class Host : Form
         web.Navigate(Entry);
     }
     void SendStatus(object message) {
-        if (IsDisposed || Disposing) return;
+        if (IsDisposed || Disposing || closingWebView) return;
         if (InvokeRequired) {
             if (IsHandleCreated) try { BeginInvoke((MethodInvoker)(() => SendStatus(message))); } catch (InvalidOperationException) {}
             return;
@@ -165,12 +168,67 @@ sealed class Host : Form
         int id = call.I("id");
         if (id <= 0) return;
         object response;
-        try { response = J.Map("id",id,"value",await backend.Call(call.S("channel"),call.A("args"))); }
+        try {
+            var channel = call.S("channel");
+            var value = channel == "import:drop" ? await PreviewDroppedImport(e) : await backend.Call(channel,call.A("args"));
+            response = J.Map("id",id,"value",value);
+        }
         catch (Exception error) { response = J.Map("id",id,"error",error.Message); }
-        if (!IsDisposed && !Disposing) browser.CoreWebView2.PostWebMessageAsJson(J.Dump(response));
+        if (!IsDisposed && !Disposing && !closingWebView) browser.CoreWebView2.PostWebMessageAsJson(J.Dump(response));
+    }
+    Task<object> PreviewDroppedImport(CoreWebView2WebMessageReceivedEventArgs message) {
+        var item = message.AdditionalObjects.SingleOrDefault();
+        var file = item as FileInfo;
+        var handle = item as CoreWebView2FileSystemHandle;
+        var nativeFile = item as CoreWebView2File;
+        var path = file != null ? file.FullName : handle != null ? handle.Path : nativeFile != null ? nativeFile.Path : "";
+        if (path == "") throw new IOException("未能读取拖入路径，请从「导入」中选择文件夹或整合包。");
+        return backend.PreviewDroppedImport(path);
+    }
+    static long WebCacheSize(string path) {
+        long total = 0;
+        foreach (var item in Directory.EnumerateFileSystemEntries(path)) {
+            var attributes = File.GetAttributes(item);
+            if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("WebView2 数据目录包含链接。");
+            total += (attributes & FileAttributes.Directory) == 0 ? new FileInfo(item).Length : WebCacheSize(item);
+        }
+        return total;
+    }
+    async void CloseWebView() {
+        const long webCacheBudget = 48000000;
+        try {
+            var path = J.Inside(profile, "WebView2");
+            // Only this launcher-owned WebView2 folder is disposable. Accounts and settings live alongside it.
+            if (!String.Equals(Path.GetFullPath(webEnvironment.UserDataFolder), path, StringComparison.OrdinalIgnoreCase)) return;
+            var size = await Task.Run(() => { J.NoLinks(path); return WebCacheSize(path); });
+            if (size <= webCacheBudget) return;
+            var released = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<CoreWebView2BrowserProcessExitedEventArgs> exited = (s,e) => released.TrySetResult(true);
+            webEnvironment.BrowserProcessExited += exited;
+            try {
+                browser.Dispose();
+                if (await Task.WhenAny(released.Task, Task.Delay(3000)) != released.Task) return;
+                await Task.Run(() => { J.NoLinks(path); WebCacheSize(path); Directory.Delete(path, true); });
+            } finally { webEnvironment.BrowserProcessExited -= exited; }
+        } catch (Exception error) { System.Diagnostics.Debug.WriteLine(error.Message); }
+        finally {
+            closeReady = true;
+            if (!IsDisposed) Close();
+        }
     }
     protected override void OnFormClosing(FormClosingEventArgs e) {
-        if (backend != null && !backend.CanClose()) e.Cancel = true;
+        if (!closeReady && e.CloseReason == CloseReason.UserClosing && backend != null && (backend.HasGameWork || backend.HasLanWork) && !backend.Leaving) {
+            e.Cancel = true;
+            SendStatus(J.Map("confirmGameExit", true, "lan", backend.HasLanWork, "gamesRunning", backend.HasGameWork));
+        } else if (backend != null && !backend.CanClose()) e.Cancel = true;
+        else if (!closeReady && e.CloseReason == CloseReason.UserClosing && webEnvironment != null) {
+            e.Cancel = true;
+            if (!closingWebView) {
+                closingWebView = true;
+                Hide();
+                BeginInvoke((MethodInvoker)CloseWebView);
+            }
+        }
         base.OnFormClosing(e);
     }
 }

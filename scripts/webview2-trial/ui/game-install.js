@@ -11,6 +11,37 @@ let activeInstall;
 let installPageTask;
 let toastInstance;
 let toastTimer;
+let downloadRevision = 0;
+
+async function refreshInstallTasks() {
+  const revision = ++downloadRevision;
+  const saved = await api.downloadTasks();
+  if (revision !== downloadRevision) return;
+  const current = new Map(installTasks.map(task => [task.id, task]));
+  const restored = saved.map(record => {
+    if (activeInstall?.id === record.id) { activeInstall.persisted = true; return activeInstall; }
+    return Object.assign(current.get(record.id) || {}, record, { persisted: true, views: [],
+      origin: { page: 'download-tasks', scroll: 0 } });
+  });
+  if (activeInstall && !restored.includes(activeInstall)) restored.unshift(activeInstall);
+  installTasks.splice(0, installTasks.length, ...restored);
+  renderInstallTasks();
+}
+
+function removeInstallTask(task) {
+  const panel = showModal(task.state === 'complete' ? '移除下载记录？' : '移除未完成的安装？');
+  panel.body.append(element('p', task.state === 'complete' ? '已安装的实例会保留。' :
+    '将移除「' + task.input.name + '」的任务和安装暂存文件。已安装的实例、游戏公共文件和 Java 会保留。'));
+  const actions = element('div', undefined, 'form-actions');
+  const remove = button('确认移除', async () => {
+    remove.disabled = true;
+    const done = await run(() => api.removeDownload(task.id), panel.error);
+    if (done) { closeModal(); await refreshInstallTasks(); displayStatus('下载任务已移除'); }
+    else remove.disabled = false;
+  });
+  actions.append(button('取消', closeModal), remove);
+  panel.body.append(actions);
+}
 
 function installNavigationSection() {
   return installDraft?.origin.page === 'instances' ? 'instances' : 'downloads';
@@ -156,10 +187,11 @@ function backFromInstall() {
 
 const installStatePresentation = {
   active: ['↓', '下载中'],
-  cancelling: ['…', '正在取消'],
+  cancelling: ['…', '正在暂停'],
   complete: ['✓', '完成'],
   failed: ['!', '失败'],
   cancelled: ['–', '已取消'],
+  paused: ['Ⅱ', '已暂停'],
 };
 
 function installTaskCard(task, compact = false) {
@@ -168,14 +200,15 @@ function installTaskCard(task, compact = false) {
   const icon = iconImage(loaderIconPath(input.loader), 'install-task-icon');
   const identity = element('div', undefined, 'install-task-identity');
   identity.append(element('strong', input.name),
-    element('small', instanceVersionLabel(input) + (input.loaderVersion ? ' ' + input.loaderVersion : '') +
+    element('small', (input.version ? instanceVersionLabel(input) : '整合包') + (input.loaderVersion ? ' ' + input.loaderVersion : '') +
       (task.versionType ? ' · ' + gameVersionType(task.versionType) : '')));
   const [mark, label] = installStatePresentation[task.state];
   const state = element('span', undefined, 'install-task-state');
   const stateIcon = element('span', mark, 'install-status-icon');
   stateIcon.dataset.state = task.state;
   stateIcon.setAttribute('aria-hidden', 'true');
-  state.append(stateIcon, element('span', label));
+  const stateLabel = element('span', label);
+  state.append(stateIcon, stateLabel);
   const details = element('div', undefined, 'install-task-details');
   const message = element('p', task.message);
   details.append(message);
@@ -184,23 +217,33 @@ function installTaskCard(task, compact = false) {
     const bar = element('progress');
     bar.setAttribute('aria-label', '当前安装阶段的进度');
     details.append(bar);
-    const cancel = button('取消安装', cancelGameInstall);
+    const cancel = button('暂停安装', cancelGameInstall);
     cancel.disabled = task.state === 'cancelling';
     controls.append(cancel);
-    task.views.push({ message, bar });
-  } else if (task.state === 'failed' || task.state === 'cancelled') {
-    const retry = button('重试', () => startGameInstall(task), 'primary');
+    task.views.push({ message, bar, stateIcon, stateLabel });
+  } else if (['failed', 'cancelled', 'paused'].includes(task.state)) {
+    const retry = button(task.state === 'paused' ? '继续安装' : '重试', () => startGameInstall(task), 'primary');
     retry.dataset.installRetry = '';
-    controls.append(button('返回修改', () => openInstallDraft(task.input, task.origin)), retry);
-  } else {
+    controls.append(retry);
+  } else if (task.instance) {
     controls.append(button('查看实例', () => viewInstalledInstance(task.instance.id)));
+  }
+  if (!['active', 'cancelling'].includes(task.state) && task.persisted) {
+    const remove = button('移除', () => removeInstallTask(task));
+    remove.dataset.installRetry = '';
+    controls.append(remove);
   }
   card.append(icon, identity, state, details, controls);
   return card;
 }
 
 function paintInstallProgress(task) {
-  for (const { message, bar } of task.views) {
+  for (const { message, bar, stateIcon, stateLabel } of task.views) {
+    if (task.state === 'active') {
+      const installing = task.phase === 'install';
+      stateIcon.textContent = installing ? '⚙' : installStatePresentation.active[0];
+      stateLabel.textContent = installing ? '安装中' : installStatePresentation.active[1];
+    }
     message.textContent = task.message + (task.total ? ' · ' + task.done + ' / ' + task.total : '');
     if (task.total) {
       bar.max = task.total;
@@ -212,28 +255,31 @@ function paintInstallProgress(task) {
 }
 
 function renderInstallTasks() {
-  if (activeInstall) activeInstall.views = [];
-  el('active-download-count').hidden = !activeInstall;
+  for (const task of installTasks) task.views = [];
+  if (installPageTask && !installTasks.includes(installPageTask)) installPageTask.views = [];
+  const outstanding = installTasks.filter(task => ['active', 'cancelling', 'paused', 'failed'].includes(task.state)).length;
+  el('active-download-count').hidden = !outstanding;
+  el('active-download-count').textContent = outstanding;
   el('download-tasks-empty').hidden = installTasks.length > 0;
   el('download-task-list').replaceChildren(...installTasks.map(task => installTaskCard(task)));
   if (installPageTask) el('install-progress').replaceChildren(installTaskCard(installPageTask, true));
-  if (activeInstall) paintInstallProgress(activeInstall);
+  for (const task of installTasks) if (task.state === 'active') paintInstallProgress(task);
   actionState();
 }
 
 function updateInstallProgress({ phase, message, done, total }) {
-  const task = activeInstall;
+  const task = activeInstall || installTasks.find(task => task.state === 'active');
   if (task?.state !== 'active' || phase === 'idle' || phase === 'error') return;
-  Object.assign(task, { message, done, total });
+  Object.assign(task, { phase, message, done, total });
   paintInstallProgress(task);
 }
 
 function cancelGameInstall() {
-  const task = activeInstall;
+  const task = activeInstall || installTasks.find(task => ['active', 'cancelling'].includes(task.state));
   if (!task) return false;
   if (task.state === 'cancelling') return true;
   task.state = 'cancelling';
-  task.message = '正在取消安装…';
+  task.message = '正在保存下载进度…';
   task.total = undefined;
   renderInstallTasks();
   api.cancel().catch(error => {
@@ -247,11 +293,12 @@ function cancelGameInstall() {
 
 async function startGameInstall(task) {
   if (!canMutate() || activeInstall) return;
+  task.id ||= crypto.randomUUID();
   const previous = installTasks.indexOf(task);
   if (previous >= 0) installTasks.splice(previous, 1);
   installTasks.unshift(task);
   activeInstall = task;
-  Object.assign(task, { state: 'active', message: '正在准备安装…', done: 0, total: undefined });
+  Object.assign(task, { state: 'active', phase: null, message: '正在准备安装…', done: 0, total: undefined });
   if (!el('game-install').hidden) {
     installPageTask = task;
     installForm.hidden = true;
@@ -262,9 +309,9 @@ async function startGameInstall(task) {
   renderInstallTasks();
   if (installPageTask === task) slideIn(el('install-progress'), 0, 14, 220);
   try {
-    task.instance = await api.createInstance(task.input);
-    task.state = task.instance ? 'complete' : 'cancelled';
-    task.message = task.instance ? '已添加到实例列表。' : '已取消安装。';
+    task.instance = task.persisted ? await api.resumeDownload(task.id) : await api.createInstance(task.input, task.id);
+    task.state = task.instance ? 'complete' : 'paused';
+    task.message = task.instance ? '已添加到实例列表。' : '下载已保留，可稍后继续。';
   } catch (error) {
     task.state = 'failed';
     task.message = error.message;
@@ -275,6 +322,7 @@ async function startGameInstall(task) {
     activeInstall = undefined;
     localBusy = false;
     renderInstallTasks();
+    await report(refreshInstallTasks);
   }
   if (task.state !== 'complete') return;
   updateDetailInstance();
@@ -299,9 +347,14 @@ async function viewInstalledInstance(id) {
 }
 
 function showInstallToast(instance) {
+  showInstanceToast('安装完成', instance.name, instance);
+}
+
+function showInstanceToast(title, name, instance = null) {
   toastInstance = instance;
-  el('install-toast-title').textContent = '安装完成';
-  el('install-toast-name').textContent = instance.name;
+  el('install-toast-title').textContent = title;
+  el('install-toast-name').textContent = name;
+  el('install-toast-view').hidden = !instance;
   el('install-complete-toast').hidden = false;
   scheduleInstallToastClose();
 }
@@ -311,11 +364,12 @@ function scheduleInstallToastClose() {
   toastTimer = setTimeout(() => {
     const toast = el('install-complete-toast');
     if (!toast.matches(':hover, :focus-within')) toast.hidden = true;
-  }, 7500);
+  }, toastInstance ? 7500 : 4000);
 }
 
 el('open-download-tasks').addEventListener('click', () => {
   showPage('download-tasks');
+  report(refreshInstallTasks);
   el('back-from-tasks').focus({ preventScroll: true });
 });
 el('back-from-tasks').addEventListener('click', () => {
@@ -323,7 +377,7 @@ el('back-from-tasks').addEventListener('click', () => {
   el('open-download-tasks').focus({ preventScroll: true });
 });
 el('back-from-install').addEventListener('click', backFromInstall);
-el('install-toast-view').addEventListener('click', () => viewInstalledInstance(toastInstance.id));
+el('install-toast-view').addEventListener('click', () => { if (toastInstance) viewInstalledInstance(toastInstance.id); });
 el('install-toast-close').addEventListener('click', () => { el('install-complete-toast').hidden = true; });
 el('install-complete-toast').addEventListener('mouseleave', scheduleInstallToastClose);
 el('install-complete-toast').addEventListener('focusout', scheduleInstallToastClose);

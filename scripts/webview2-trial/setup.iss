@@ -1,9 +1,9 @@
 [Setup]
 AppId={{A96E3633-82E7-434D-9DE8-BC60DA4C3BF4}
-AppName=EBuild C# 开发版
-AppVersion=dev.0.1.1-csharp
-DefaultDirName={localappdata}\Programs\EBuild-WebView2-CSharp
-DefaultGroupName=EBuild C# 开发版
+AppName=EBuild 启动器
+AppVersion=dev.0.1.2
+DefaultDirName={localappdata}\Programs\EBuild
+DefaultGroupName=EBuild 启动器
 DisableProgramGroupPage=yes
 AllowRootDirectory=no
 PrivilegesRequired=lowest
@@ -13,22 +13,22 @@ MinVersion=10.0.19045
 WizardStyle=modern
 SetupIconFile={#PayloadDir}\ui\icon.ico
 UninstallDisplayIcon={app}\EBuild-WebView2.exe
-OutputBaseFilename=EBuild-CSharp-Development-Windows-x64-Setup
+OutputBaseFilename=EBuild-dev.0.1.2-Windows-x64-Setup
 Compression=lzma2
 SolidCompression=yes
 
 [Languages]
-Name: "zhcn"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "zhcn"; MessagesFile: "{#LanguageFile}"
 
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "{#Bootstrapper}"; Flags: dontcopy
 
 [Icons]
-Name: "{group}\EBuild C# 开发版"; Filename: "{app}\EBuild-WebView2.exe"
+Name: "{group}\EBuild 启动器"; Filename: "{app}\EBuild-WebView2.exe"
 
 [Run]
-Filename: "{app}\EBuild-WebView2.exe"; Description: "打开 EBuild C# 开发版"; Flags: nowait postinstall skipifsilent; Check: CanLaunch
+Filename: "{app}\EBuild-WebView2.exe"; Description: "打开 EBuild 启动器"; Flags: nowait postinstall skipifsilent; Check: CanLaunch
 
 [Code]
 var

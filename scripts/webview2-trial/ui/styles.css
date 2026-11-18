@@ -29,6 +29,14 @@
   }
 }
 * { box-sizing: border-box; }
+.storage-summary { display: grid; gap: 5px; margin-bottom: 14px; }
+.storage-list { display: grid; max-height: clamp(100px, calc(100vh - 355px), 370px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.storage-summary .path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.storage-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.storage-row > span:first-of-type { grid-column: 2; display: grid; gap: 2px; }
+.storage-row input { min-height: auto; margin: 0; }
+.storage-bytes { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storage-selection { margin-top: 14px; color: var(--muted); }
 [hidden] { display: none !important; }
 body { margin: 0; color: var(--text); background: var(--bg); height: 100vh; overflow: hidden; }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -51,7 +59,7 @@ small { font-size: var(--font-caption); line-height: 1.45; color: var(--muted); 
 .titlebar { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 17px; background: var(--chrome); color: var(--chrome-text); -webkit-app-region: drag; user-select: none; }
 .brand { display: block; border-radius: 4px; }
 .shell { display: grid; grid-template-rows: minmax(0, 1fr) auto auto; height: 100vh; }
-.bottom-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px 12px; background: var(--chrome); color: var(--chrome-text); }
+.bottom-nav { display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 4px; padding: 5px 12px; background: var(--chrome); color: var(--chrome-text); }
 .bottom-nav button { border: 1px solid transparent; background: transparent; display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; }
 .bottom-nav button span { font-size: 18px; width: 18px; text-align: center; line-height: 1; }
 .bottom-nav button:hover:not(:disabled) { background: #ffffff20; }
@@ -79,6 +87,9 @@ main:has(> #instances:not([hidden])) { background: var(--home-bg); }
 .instance-summary h1 { margin-bottom: 4px; }
 .instance-hero-actions { display: grid; gap: 7px; }
 .instance-hero-actions button { min-height: 34px; }
+#active-game-details { margin-top: 6px; min-height: 26px; padding: 2px 8px; }
+#launch-label { display: inline-block; }
+.loading-dot { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 #launch { display: inline-flex; gap: 7px; align-items: center; justify-content: center; }
 .other-instances { margin-top: 13px; }
 .other-instances .heading { margin-bottom: 7px; }
@@ -88,8 +99,41 @@ main:has(> #instances:not([hidden])) { background: var(--home-bg); }
 .instance-choice-hint { color: var(--muted); font-size: var(--font-caption); }
 .instance-add { display: inline-grid; align-content: center; justify-items: center; min-width: 82px; min-height: 60px; margin-top: 8px; border-radius: 10px; border-style: dashed; font-size: var(--font-caption); }
 .instance-add span { font-size: 21px; line-height: 1.05; }
-.instance-task-toolbar { display: flex; justify-content: flex-end; margin-bottom: 9px; }
+.instance-task-toolbar { display: flex; justify-content: flex-end; gap: 7px; margin-bottom: 9px; }
+.instance-running-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px; }
+.danger-button:not(:disabled) { color: var(--danger); }
+.game-popover { position: fixed; inset: auto; margin: 0; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); box-shadow: 0 6px 20px #0003; }
+#game-threads { width: min(410px, calc(100vw - 16px)); }
+#game-thread-list { display: grid; gap: 5px; margin: 7px 0 0; padding: 0; max-height: min(290px, 44vh); overflow: auto; list-style: none; }
+.game-thread-row { min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: start; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.game-thread-row .instance-icon { width: 32px; height: 32px; }
+.game-thread-info { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.game-thread-info small { color: var(--muted); }
+.game-thread-phase { display: flex; align-items: center; gap: 5px; }
+.game-thread-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 5px; }
+#instance-context-menu { min-width: 138px; padding: 4px; }
+#instance-context-menu button { display: block; width: 100%; border-color: transparent; text-align: left; }
+.delete-instance-name { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-block: 9px; padding: 5px 8px; background: var(--surface); border-radius: 6px; overflow-wrap: anywhere; }
+.original-delete-path, .import-confirm-path, .instance-basic .setting-row span { overflow-wrap: anywhere; }
+#active-instance-missing { color: var(--danger); }
+#import-drop-hint { position: fixed; inset: 8px; z-index: 5; display: grid; place-items: center; pointer-events: none; border: 2px dashed currentColor; border-radius: 9px; color: var(--accent); background: var(--bg); font-weight: 600; }
+.delete-instance-confirmation { display: grid; gap: 8px; max-width: 340px; }
 #instances { display: flex; flex-direction: column; min-height: 100%; }
+.lan-heading { margin-bottom: 10px; }
+.lan-lobby { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.lan-card { display: grid; gap: 7px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.lan-card h2, .lan-card p, .lan-footer p { margin: 0; }
+.lan-card p, .lan-hint { color: var(--muted); }
+.lan-card label { font-weight: var(--weight-label); }
+.lan-card input { width: 100%; min-height: 34px; padding: 0 9px; }
+.lan-card .primary { justify-self: start; }
+.lan-port-tools { display: flex; align-items: end; gap: 7px; }
+.lan-port-tools label { display: grid; gap: 5px; width: min(100%, 155px); }
+.lan-room-tools { display: grid; gap: 8px; max-width: 550px; }
+.lan-room-tools input { font-family: Consolas, monospace; }
+.lan-quick { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 7px; align-items: center; }
+.lan-footer { display: flex; align-items: center; gap: 8px; margin-top: 9px; overflow-wrap: anywhere; }
+#lan-connection { padding: 3px 8px; border-radius: 6px; background: var(--surface); color: var(--accent); }
 .home-account { position: relative; align-self: flex-end; margin-top: auto; padding-top: 14px; max-width: 100%; }
 #home-account-card { display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 4px 10px 4px 5px; }
 #home-account-avatar { width: 27px; height: 27px; image-rendering: pixelated; border-radius: 4px; }
@@ -144,15 +188,17 @@ select[data-enhanced-select] { display: none; }
 .select-no-results { padding: 10px 7px; color: var(--muted); font-size: var(--font-description); }
 .install-loader-group { display: grid; gap: 4px; }
 .install-loader-cards {
-  --loader-gap: 8px; --loader-index: 0;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--loader-gap);
+  --loader-gap: 8px; --loader-index: 0; --loader-columns: 5;
+  display: grid; grid-template-columns: repeat(var(--loader-columns), minmax(0, 1fr)); gap: var(--loader-gap);
   position: relative; isolation: isolate;
 }
 .install-loader-cards:has(input[value='fabric']:checked) { --loader-index: 1; }
 .install-loader-cards:has(input[value='neoforge']:checked) { --loader-index: 2; }
+.install-loader-cards:has(input[value='forge']:checked) { --loader-index: 3; }
+.install-loader-cards:has(input[value='quilt']:checked) { --loader-index: 4; }
 .install-loader-cards::before {
   content: ''; position: absolute; inset: 0 auto 0 0; z-index: 0;
-  box-sizing: border-box; width: calc((100% - 2 * var(--loader-gap)) / 3);
+  box-sizing: border-box; width: calc((100% - (var(--loader-columns) - 1) * var(--loader-gap)) / var(--loader-columns));
   transform: translateX(calc(var(--loader-index) * (100% + var(--loader-gap))));
   border: 1px solid var(--accent); border-radius: 7px; background: var(--selected); pointer-events: none;
 }
@@ -327,23 +373,41 @@ dialog::backdrop { background: #11192777; }
 code { font-family: "IBM Plex Mono", Consolas, monospace; }
 .device-code { display: inline-block; margin: 12px 0; font-size: var(--font-page); font-weight: 700; letter-spacing: .12em; }
 
-@media (prefers-reduced-motion: no-preference) {
+:root[data-motion="on"] {
   button {
     transition: background-color 120ms ease-out, border-color 120ms ease-out,
-      color 120ms ease-out, filter 120ms ease-out, transform 90ms ease-out;
+      color 120ms ease-out, filter 120ms ease-out, scale 185ms cubic-bezier(.22, .8, .25, 1.23);
   }
-  button:active:not(:disabled) { transform: scale(.98); }
+  button:active:not(:disabled) { scale: .97; transition-duration: 85ms; }
   .has-indicator::before {
     transition: transform 240ms cubic-bezier(.22, .7, .24, 1), width 240ms cubic-bezier(.22, .7, .24, 1);
   }
-  dialog[open] { animation: dialog-enter 230ms cubic-bezier(.22, .7, .24, 1); }
+  dialog[open] { animation: dialog-enter 230ms cubic-bezier(.22, .8, .25, 1.18); }
   dialog[open]::backdrop { animation: fade-in 160ms ease-out; }
   .install-toast:not([hidden]) { animation: dialog-enter 180ms ease-out; }
   .install-loader-cards::before { transition: transform 230ms cubic-bezier(.22, .7, .24, 1); }
   .install-loader-card { transition: color 150ms ease-out; }
   #install-loader-version-field:not([hidden]) { animation: dialog-enter 220ms cubic-bezier(.22, .7, .24, 1); }
   .install-field .select-chevron { transition: transform 150ms ease-out, margin-top 150ms ease-out; }
-  .install-field > .select-popover:popover-open { animation: install-picker-enter 160ms cubic-bezier(.22, .7, .24, 1); }
+  .loading-dot:not([hidden]) { animation: loading-dot 1300ms ease-in-out infinite; }
+  :is(.game-popover, .select-popover, .account-menu) {
+    opacity: 0;
+    scale: .98;
+    pointer-events: none;
+    transform-origin: top right;
+    transition: opacity 100ms ease-out, scale 100ms ease-out, display 100ms allow-discrete, overlay 100ms allow-discrete;
+  }
+  .select-popover { transform-origin: top center; }
+  .select-popover.opens-above, .account-menu { transform-origin: bottom center; }
+  :is(.game-popover:popover-open, .select-popover:popover-open, .account-menu:not([hidden])) {
+    opacity: 1;
+    scale: 1;
+    pointer-events: auto;
+    transition: opacity 155ms ease-out, scale 200ms cubic-bezier(.22, .82, .25, 1.23);
+  }
+  @starting-style {
+    :is(.game-popover:popover-open, .select-popover:popover-open, .account-menu:not([hidden])) { opacity: 0; scale: .96; }
+  }
 }
 
 @keyframes dialog-enter {
@@ -351,10 +415,9 @@ code { font-family: "IBM Plex Mono", Consolas, monospace; }
   to { opacity: 1; transform: none; }
 }
 
-.select-popover.opens-above { --select-enter-offset: 6px; }
-@keyframes install-picker-enter {
-  from { opacity: 0; transform: translateY(var(--select-enter-offset, -6px)); }
-  to { opacity: 1; transform: none; }
+@keyframes loading-dot {
+  0%, 100% { opacity: .55; scale: .84; }
+  50% { opacity: 1; scale: 1.12; }
 }
 
 @keyframes fade-in {
@@ -364,6 +427,8 @@ code { font-family: "IBM Plex Mono", Consolas, monospace; }
 
 @media (max-width: 800px) {
   .page, footer { padding-inline: 15px; }
+  .install-loader-card { gap: 5px; padding-inline: 6px; }
+  .install-loader-card img { width: 24px; height: 24px; }
   .instance-hero { min-height: 112px; padding: 12px 15px; }
   .instance-hero > .instance-icon { width: 62px; height: 62px; }
 }

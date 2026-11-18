@@ -3,16 +3,18 @@ const el = id => document.getElementById(id);
 const modal = el('modal');
 const globalForm = el('settings-form');
 const accountForm = el('account-form');
-const loaderNames = { vanilla: '原版', fabric: 'Fabric', neoforge: 'NeoForge' };
+const loaderNames = { vanilla: '原版', fabric: 'Fabric', neoforge: 'NeoForge', forge: 'Forge', quilt: 'Quilt' };
 const typeNames = { mod: '模组', modpack: '整合包', shader: '光影', resourcepack: '材质' };
 let settings;
 let instances = [];
+let gameSessions = new Map();
 let account;
 let catalog;
 let catalogRequest;
 let catalogError = '';
 let gameLimit = 35;
 let resourceQuery;
+let renderedResourceQuery;
 let searchGeneration = 0;
 let resourceOffset = 0;
 let phase = 'idle';
@@ -20,8 +22,6 @@ let localBusy = false;
 let deviceOpen = false;
 let instanceEditor;
 let selectingInstance = false;
-const motionPreference = matchMedia('(prefers-reduced-motion: no-preference)');
-const contentAnimations = new WeakMap();
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -67,15 +67,17 @@ function selectedInstance() {
 
 function actionState() {
   const can = canMutate();
-  for (const id of ['add-instance', 'first-instance', 'import-pack', 'import-pack-empty', 'change-directory', 'reset-directory', 'clear-cache', 'microsoft-login', 'microsoft-logout']) el(id).disabled = !can;
-  el('launch').disabled = !can || selectingInstance || !selectedInstance();
+  for (const id of ['add-instance', 'first-instance', 'open-import', 'change-directory', 'reset-directory', 'clear-cache', 'microsoft-login', 'microsoft-logout']) el(id).disabled = !can;
+  updateGameControls();
   el('edit-active-instance').disabled = selectingInstance || !selectedInstance();
-  el('launch-label').textContent = phase === 'running' ? '游戏运行中' : '启动游戏';
   for (const control of document.querySelectorAll('[data-mutates]')) control.disabled = !can;
   if (typeof updateInstallActions === 'function') updateInstallActions(can);
 }
 
 function taskStatus(update) {
+  if (update.downloadsChanged) { report(refreshInstallTasks); return; }
+  if (update.lanState) { applyLanState(update.lanState); return; }
+  if (handleGameEvent(update)) return;
   phase = update.phase;
   displayStatus(update.message + (update.total ? ' · ' + update.done + ' / ' + update.total : ''), phase);
   const active = !['idle', 'running', 'error'].includes(phase);
@@ -87,8 +89,9 @@ function taskStatus(update) {
   } else {
     progress.removeAttribute('value');
   }
-  el('cancel').hidden = !active || phase === 'starting';
+  el('cancel').hidden = !active || ['starting', 'deleting'].includes(phase);
   if (update.kind === 'game-install') updateInstallProgress(update);
+  if (update.kind === 'game-launch') updateLaunchProgress(update);
   if (phase === 'device') {
     deviceOpen = true;
     const panel = showModal('微软账号登录', () => api.cancel());
@@ -145,15 +148,6 @@ function showModal(title, onClose = closeModal) {
   return { body, error };
 }
 
-function slideIn(content, x, y, duration = 250) {
-  if (!motionPreference.matches || !content.getClientRects().length) return;
-  contentAnimations.get(content)?.cancel();
-  contentAnimations.set(content, content.animate([
-    { transform: 'translate(' + x + 'px, ' + y + 'px)', opacity: .5 },
-    { transform: 'translate(0, 0)', opacity: 1 },
-  ], { duration, easing: 'cubic-bezier(.22, .7, .24, 1)' }));
-}
-
 function updateIndicator(bar, active) {
   if (!active?.offsetWidth) return;
   bar.style.setProperty('--indicator-x', active.offsetLeft + 'px');
@@ -174,7 +168,10 @@ function switchTab(buttons, panels, index) {
     panels[i].hidden = i !== index;
   }
   updateIndicator(buttons[index].parentElement, buttons[index]);
-  if (previous >= 0 && previous !== index) slideIn(panels[index], Math.sign(index - previous) * 18, 0, 210);
+  if (previous >= 0 && previous !== index) {
+    cancelMotion(panels[previous]);
+    slideIn(panels[index], Math.sign(index - previous) * 18, 0, 210);
+  }
 }
 
 function navigationSection(page) {
@@ -191,6 +188,7 @@ function showPage(page) {
   }
   if (page !== 'resource-detail' && page !== 'game-install') clearResourceDetail();
   closeSelectPicker();
+  closeGamePopovers();
   const main = el('main');
   const previousPage = main.querySelector('.page:not([hidden])');
   const buttons = [...document.querySelectorAll('[data-page]')];
@@ -205,14 +203,14 @@ function showPage(page) {
   main.scrollTop = 0;
   syncIndicators();
   if (previousPage?.id !== page) {
-    contentAnimations.get(previousPage)?.cancel();
+    cancelMotion(previousPage);
     if (page === 'game-install') slideIn(el(page), 0, -32, 280);
-    else if (previousPage?.id === 'game-install' && previousTab === nextTab) slideIn(el(page), 0, 28, 260);
-    else if (page !== section) slideIn(el(page), 0, -24);
-    else if (previousTab === nextTab) slideIn(el(page), 0, 20);
-    else slideIn(el(page), Math.sign(nextTab - previousTab) * 32, 0);
+    else if (previousTab !== nextTab && previousTab >= 0) slideIn(el(page), Math.sign(nextTab - previousTab) * 24, 0);
+    else if (page !== section) slideIn(el(page), 0, -19);
+    else slideIn(el(page), 0, 19);
   }
   if (page === 'downloads' && !el('game-download').hidden && !catalog) loadCatalog();
+  if (page === 'multiplayer') openLanPage();
   if (page === 'accounts' && typeof refreshLegacyAccount === 'function') refreshLegacyAccount();
 }
 
@@ -232,9 +230,12 @@ function renderInstances() {
   el('empty-instances').hidden = Boolean(selected);
   el('other-instances').hidden = !selected;
   if (selected) {
+    el('active-instance').dataset.instanceId = selected.id;
     el('active-instance-icon').src = loaderIconPath(selected.loader);
     el('active-instance-name').textContent = selected.name;
     el('active-instance-version').textContent = instanceVersionLabel(selected);
+    el('active-instance-missing').hidden = !selected.externalMissing;
+    el('relocate-active-instance').hidden = !selected.externalMissing;
   }
   const rows = instances.filter(item => item.id !== selected?.id).map(item => {
     const row = button('', () => selectInstance(item.id, row), 'instance-choice');
@@ -243,11 +244,21 @@ function renderInstances() {
     const icon = iconImage(loaderIconPath(item.loader), 'instance-icon');
     const info = element('span');
     info.append(element('strong', item.name), element('small', instanceVersionLabel(item)));
-    row.append(icon, info, element('span', '切换', 'instance-choice-hint'));
-    return row;
+    const state = gameState(item.id);
+    row.append(icon, info, element('span', gameLabels[state] || (item.externalMissing ? '找不到文件夹' : '切换'), 'instance-choice-hint'));
+    if (state !== 'running' && state !== 'stopping') return row;
+    const wrapper = element('div', undefined, 'instance-running-row');
+    wrapper.dataset.instanceId = item.id;
+    const stop = button(state === 'stopping' ? '正在停止' : '停止', () => stopGame(item.id), 'danger-button');
+    stop.setAttribute('aria-label', '停止 ' + item.name);
+    stop.disabled = state === 'stopping';
+    wrapper.append(row, stop);
+    return wrapper;
   });
   el('instance-list').replaceChildren(...rows);
+  renderGameThreads();
   actionState();
+  renderLanControls();
 }
 
 function loaderIconPath(loader) { return 'icons/' + (Object.hasOwn(loaderNames, loader) ? loader : 'vanilla') + '.svg'; }
@@ -285,6 +296,8 @@ async function selectInstance(id, trigger) {
     const moveFocus = document.activeElement === trigger;
     Object.assign(settings, value);
     renderInstances();
+    slideIn(el('active-instance-icon'), -10, 0, 215);
+    slideIn(el('active-instance').querySelector('.instance-summary'), -10, 0, 215);
     updateDetailInstance();
     if (moveFocus) el('active-instance-name').focus({ preventScroll: true });
   } finally {
@@ -325,7 +338,7 @@ function resetCatalog() {
   renderGameVersions();
 }
 
-function renderGameVersions() {
+function renderGameVersions(animateFrom = Infinity) {
   const query = el('game-query').value.trim().toLowerCase();
   const versions = (catalog?.versions ?? []).filter(item => item.type === el('game-type').value && item.id.toLowerCase().includes(query));
   const source = catalog?.source === 'bmclapi' ? 'BMCLAPI 国内镜像' : catalog?.source === 'mojang' ? 'Mojang 官方源' : '';
@@ -334,7 +347,8 @@ function renderGameVersions() {
   else if (catalog?.source === 'mojang' && catalog?.preferredSource === 'bmclapi') provenance += '（镜像回退）';
   el('game-results').textContent = catalogError || (catalog ? '版本列表来源：' + provenance + ' · ' + versions.length + ' 个版本' : '正在读取版本列表…');
   el('more-games').hidden = versions.length <= gameLimit;
-  el('game-list').replaceChildren(...versions.slice(0, gameLimit).map(version => {
+  const list = el('game-list');
+  const rows = versions.slice(0, gameLimit).map(version => {
     const row = element('div', undefined, 'download-row');
     const identity = element('div', undefined, 'game-version-identity');
     const icon = element('img');
@@ -349,7 +363,9 @@ function renderGameVersions() {
     install.dataset.mutates = '';
     row.append(identity, install);
     return row;
-  }));
+  });
+  list.replaceChildren(...rows);
+  animateVisibleRows(list, rows.slice(animateFrom));
   actionState();
 }
 
@@ -501,8 +517,16 @@ function editInstance(instance) {
   };
   identity.append(field('实例名称', name), fact('Minecraft 版本', instance.version),
     fact('加载器', loaderNames[instance.loader]), fact('加载器版本', instance.loaderVersion || '—'));
+  if (instance.externalPath) identity.append(fact('原游戏目录', instance.externalPath));
   const basicActions = element('div', undefined, 'instance-tools');
   basicActions.append(button('打开实例文件夹', () => report(() => api.openInstance(instance.id))));
+  const verify = button('完整校验', () => run(async () => {
+    if (await api.verifyInstance(instance.id)) displayStatus('游戏文件已校验');
+  }));
+  verify.dataset.idleInstance = instance.id;
+  if (instance.externalMissing) basicActions.append(button('重新定位', () => relocateExternal(instance)));
+  else basicActions.append(verify);
+  basicActions.append(...instanceRemovalButtons(instance));
   basic.append(identity, basicActions);
   settingsFields(java, [...gameFields, ...advancedFields], instance.overrides ?? {});
   for (const control of java.querySelectorAll('[name]')) setControl(control, instance.overrides?.[control.name] ?? settings[control.name]);
@@ -588,6 +612,7 @@ function downloadInstanceMods(instance) {
 
 async function searchResources(append = false) {
   const generation = ++searchGeneration;
+  const list = el('resource-list');
   const more = el('more-resources');
   more.hidden = true;
   if (!append) {
@@ -596,13 +621,24 @@ async function searchResources(append = false) {
       query: el('resource-query').value, version: el('resource-game').value.trim(),
       type: el('resource-type').value, loader: el('resource-loader').value, sort: el('resource-sort').value,
     };
-    el('resource-list').replaceChildren();
+  }
+  const query = resourceQuery;
+  const sorting = !append && renderedResourceQuery && renderedResourceQuery.sort !== query.sort &&
+    ['query', 'version', 'type', 'loader'].every(key => renderedResourceQuery[key] === query[key]);
+  if (!append && !sorting) {
+    list.replaceChildren();
+    renderedResourceQuery = undefined;
   }
   el('resource-results').textContent = '正在搜索 Modrinth…';
   try {
-    const result = await api.search({ ...resourceQuery, offset: resourceOffset });
+    const result = await api.search({ ...query, offset: resourceOffset });
     if (generation !== searchGeneration) return;
-    for (const project of result.hits) el('resource-list').append(projectRow(project));
+    const rows = result.hits.map(projectRow);
+    const positions = sorting ? captureRowPositions(list) : undefined;
+    if (append) list.append(...rows);
+    else list.replaceChildren(...rows);
+    renderedResourceQuery = query;
+    animateVisibleRows(list, rows, positions);
     resourceOffset += result.hits.length;
     el('resource-results').textContent = result.total_hits ? '已显示 ' + resourceOffset + ' / ' + result.total_hits + ' 项' : '没有匹配的资源';
     more.hidden = resourceOffset >= result.total_hits || !result.hits.length;
@@ -614,6 +650,7 @@ async function searchResources(append = false) {
 
 function projectRow(project) {
   const row = element('div', undefined, 'resource-row');
+  row.dataset.motionKey = project.project_id || project.slug;
   const open = element('button', undefined, 'resource-open');
   open.type = 'button';
   open.setAttribute('aria-label', '查看 ' + project.title + ' 详情');
@@ -689,20 +726,6 @@ function confirmPlan(plan, instanceId, directory) {
   panel.body.append(actions);
 }
 
-async function launchInstance(instance, approvedJava = null) {
-  const result = await run(() => api.start(instance.id, approvedJava));
-  const major = result?.requiredJava;
-  if (!major) return;
-  const panel = showModal('需要 Java ' + major);
-  panel.body.append(element('p', '「' + instance.name + '」需要 Java ' + major + '。本机未找到兼容的版本。'),
-    element('small', '下载的 Java 将保存在启动器的游戏数据目录。'));
-  const actions = element('div', undefined, 'form-actions');
-  actions.append(button('取消', closeModal), button('下载并启动', () => {
-    closeModal();
-    launchInstance(instance, major);
-  }, 'primary'));
-  panel.body.append(actions);
-}
 
 async function manageJava() {
   const panel = showModal('Java 管理');
@@ -754,6 +777,7 @@ function chooseMigration(target) {
       if (!result) return;
       resetCatalog();
       await refreshInstances();
+      await refreshInstallTasks();
       displayStatus('游戏数据目录已切换');
     });
   }, 'primary'));
@@ -768,6 +792,7 @@ function showAccount() {
 
 function showPreferences() {
   document.documentElement.dataset.theme = settings.theme;
+  applyMotionPreference(settings.motion || 'on');
   fillForm(globalForm, settings);
   fillForm(accountForm, settings);
   el('current-root').textContent = settings.currentRoot;
@@ -795,17 +820,12 @@ el('cancel').addEventListener('click', () => {
 el('data-folder').addEventListener('click', () => report(() => api.openData()));
 el('add-instance').addEventListener('click', () => createInstance());
 el('first-instance').addEventListener('click', () => createInstance());
-const importPack = () => run(async () => {
-  const result = await api.importPack();
-  if (result) { await refreshInstances(); displayStatus('已导入 ' + result.name); }
-});
-el('import-pack').addEventListener('click', importPack);
-el('import-pack-empty').addEventListener('click', importPack);
-el('game-query').addEventListener('input', () => { gameLimit = 35; renderGameVersions(); });
-el('game-type').addEventListener('change', () => { gameLimit = 35; renderGameVersions(); });
+el('game-query').addEventListener('input', () => { gameLimit = 35; renderGameVersions(0); });
+el('game-type').addEventListener('change', () => { gameLimit = 35; renderGameVersions(0); });
 el('refresh-game').addEventListener('click', () => loadCatalog(true));
-el('more-games').addEventListener('click', () => { gameLimit += 35; renderGameVersions(); });
+el('more-games').addEventListener('click', () => { const previousLimit = gameLimit; gameLimit += 35; renderGameVersions(previousLimit); });
 el('search-form').addEventListener('submit', event => { event.preventDefault(); searchResources(); });
+for (const id of ['resource-type', 'resource-loader', 'resource-sort']) el(id).addEventListener('change', () => searchResources());
 el('more-resources').addEventListener('click', () => searchResources(true));
 el('manage-java').addEventListener('click', manageJava);
 el('change-directory').addEventListener('click', () => report(async () => {
@@ -813,12 +833,11 @@ el('change-directory').addEventListener('click', () => report(async () => {
   if (target) chooseMigration(target);
 }));
 el('reset-directory').addEventListener('click', () => chooseMigration(''));
-el('clear-cache').addEventListener('click', () => run(async () => {
-  if (await api.clearCache()) displayStatus('下载缓存已清理');
-}));
+el('clear-cache').addEventListener('click', () => report(openStorage));
 globalForm.elements.proxyMode.addEventListener('change', () => {
   el('manual-proxy').hidden = globalForm.elements.proxyMode.value !== 'manual';
 });
+globalForm.elements.motion.addEventListener('change', () => applyMotionPreference(globalForm.elements.motion.value));
 globalForm.addEventListener('submit', event => {
   event.preventDefault();
   report(async () => {
@@ -851,8 +870,12 @@ el('microsoft-logout').addEventListener('click', () => run(async () => {
 api.onStatus(taskStatus);
 report(async () => {
   settings = await api.getSettings();
+  applyMotionPreference(settings.motion || 'on');
+  applyGameStates(await api.gameStates());
   account = await report(() => api.account());
   showPreferences();
   await refreshInstances();
+  await refreshInstallTasks();
+  applyLanState(await api.lanState());
   displayStatus('就绪');
 });

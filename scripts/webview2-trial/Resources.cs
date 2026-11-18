@@ -65,7 +65,7 @@ sealed class Resources
         return Tuple.Create(await project,(await releases).A());
     }
     static bool Compatible(object release,string type,object instance) {
-        if (type == "modpack") return release.A("loaders").Any(x => new[] {"minecraft","fabric","neoforge"}.Contains(x.S()));
+        if (type == "modpack") return release.A("loaders").Any(x => x.S() == "minecraft" || Minecraft.SupportsLoader(x.S()));
         return instance != null && release.A("game_versions").Any(x => x.S() == instance.S("version")) &&
             (type != "mod" || release.A("loaders").Any(x => x.S() == instance.S("loader")));
     }
@@ -164,7 +164,7 @@ sealed class Resources
                 var project = result.Item1;
                 var type = project.S("project_type");
                 var preferred = args.Arg(2).S();
-                var all = backend.Instances().ToArray();
+                var all = backend.Instances().Where(instance => !instance.B("externalMissing")).ToArray();
                 var selected = all.FirstOrDefault(x => x.S("id") == preferred);
                 var choice = Pick(project,result.Item2,args.Arg(1).S(),selected,channel == "resources:destination");
                 if (channel == "resources:plan") return await RememberPlan(net,project,choice,result.Item2,selected,"",ct);
@@ -201,18 +201,18 @@ sealed class Resources
                 Plan plan;
                 if (!plans.TryGetValue(id,out plan) || plan.Root != backend.Root) throw new IOException("安装计划已失效。");
                 if (plan.Replacements.Count > 0 && !Object.Equals(args.Arg(1), true)) throw new IOException("请先确认要替换的模组文件。");
+                if (plan.Pack != null) {
+                    var installedPack = await backend.CreatePackDownload("", plan.Pack, plan.Title);
+                    plans.Remove(id);
+                    return installedPack;
+                }
                 return await backend.Job(async (n,p,t) => {
-                    object output;
-                    if (plan.Pack != null) {
-                        var zip = J.Inside(backend.Root,"cache/" + plan.Pack.S("sha512") + ".mrpack");
-                        p("download","正在下载整合包",0,0); await n.FileTo(plan.Pack,zip,t);
-                        output = await Pack(zip,n,p,t);
-                    } else {
-                        backend.Instance(plan.Instance);
-                        await InstallParts(plan,backend.InstancePath(plan.Instance),false,n,p,t);
-                        output = true;
-                    }
-                    plans.Remove(id); return output;
+                    var target = backend.Instance(plan.Instance);
+                    backend.RequireIdleInstance(plan.Instance);
+                    var path = backend.InstancePath(plan.Instance);
+                    if (target.S("externalPath") != "") await Task.Run(() => ExternalInstances.EnsureNotRunning(path), t);
+                    await InstallParts(plan,path,false,n,p,t);
+                    plans.Remove(id); return true;
                 });
             case "resources:export":
                 Destination dest;
@@ -306,7 +306,7 @@ sealed class Resources
              Regex.IsMatch(x,@"^\.(ebuild|installed|launch|natives|resource)",RegexOptions.IgnoreCase))) throw new IOException("整合包包含无效路径。");
         return name;
     }
-    internal async Task<object> Pack(string file,Network net,Action<string,string,int,int> progress,CancellationToken ct) {
+    internal static object ReadPackIndex(string file) {
         object index;
         using (var zip = ZipFile.OpenRead(file)) {
             var entry = zip.GetEntry("modrinth.index.json");
@@ -314,12 +314,24 @@ sealed class Resources
             using (var reader = new StreamReader(entry.Open())) index = J.Parse(reader.ReadToEnd());
         }
         if (index.I("formatVersion") != 1 || index.S("game") != "minecraft") throw new IOException("不支持该 .mrpack 格式。");
+        return index;
+    }
+
+    internal static object PackSpec(object index) {
         var deps = index.At("dependencies");
         var keys = deps.Obj().Keys.Where(x => x != "minecraft").ToArray();
-        if (keys.Length > 1 || keys.Any(x=>x!="fabric-loader" && x!="neoforge")) throw new IOException("该整合包使用了暂未支持的加载器。");
+        var packLoaders = new Dictionary<string,string> {
+            { "fabric-loader", "fabric" }, { "quilt-loader", "quilt" }, { "neoforge", "neoforge" }, { "forge", "forge" }
+        };
+        if (keys.Length > 1 || keys.Any(key => !packLoaders.ContainsKey(key))) throw new IOException("该整合包使用了暂未支持的加载器。");
         var loader = keys.FirstOrDefault();
-        return await backend.Add(J.Map("name",index.S("name"),"version",deps.S("minecraft"),
-            "loader",loader == null ? "vanilla" : loader == "fabric-loader" ? "fabric" : "neoforge","loaderVersion",loader == null ? "" : deps.S(loader)),
+        return J.Map("name",index.S("name"),"version",deps.S("minecraft"),
+            "loader",loader == null ? "vanilla" : packLoaders[loader],"loaderVersion",loader == null ? "" : deps.S(loader));
+    }
+
+    internal async Task<object> Pack(string file,Network net,Action<string,string,int,int> progress,CancellationToken ct, string downloadId = "") {
+        var index = ReadPackIndex(file);
+        return await backend.Add(PackSpec(index),
             net,progress,ct,async dir => {
                 var entries = index.A("files").Where(x => x.At("env").S("client") != "unsupported").ToArray();
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -340,8 +352,21 @@ sealed class Resources
                     }
                     throw new IOException("整合包文件下载失败：" + entry.S("path"));
                 },ct);
-                foreach (var prefix in new[] {"overrides/","client-overrides/"})
-                    Network.Unzip(file,dir,ct,path=>path.StartsWith(prefix,StringComparison.Ordinal) && path.Length>prefix.Length ? PackPath(path.Substring(prefix.Length)) : null);
-            });
+                int overrideCount;
+                using (var archive = ZipFile.OpenRead(file)) overrideCount = archive.Entries.Count(entry =>
+                    !String.IsNullOrEmpty(entry.Name) && (entry.FullName.StartsWith("overrides/",StringComparison.Ordinal) ||
+                    entry.FullName.StartsWith("client-overrides/",StringComparison.Ordinal)));
+                progress("install", "正在解压整合包文件", 0, overrideCount);
+                await Task.Run(() => {
+                    var extracted = 0;
+                    foreach (var prefix in new[] {"overrides/","client-overrides/"})
+                        Network.Unzip(file,dir,ct,path=>path.StartsWith(prefix,StringComparison.Ordinal) && path.Length>prefix.Length ? PackPath(path.Substring(prefix.Length)) : null,
+                            () => {
+                                var current = ++extracted;
+                                if (current % 25 == 0 || current == overrideCount)
+                                    progress("install", "正在解压整合包文件", current, overrideCount);
+                            });
+                }, ct);
+            }, downloadId: downloadId);
     }
 }

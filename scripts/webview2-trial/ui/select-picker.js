@@ -3,6 +3,7 @@ const selectPopover = el('select-popover');
 const selectSearch = el('select-search');
 const selectResults = el('select-results');
 let openSelect;
+let detachSelectTimer;
 
 function selectLabel(select) {
   const label = select.labels[0];
@@ -102,9 +103,12 @@ function clearSelectPicker() {
   openSelect.trigger.setAttribute('aria-expanded', 'false');
   openSelect.focusTarget.removeAttribute('aria-activedescendant');
   openSelect = undefined;
-  queueMicrotask(() => {
+  const detach = () => {
     if (!openSelect && selectPopover.parentElement !== document.body) document.body.append(selectPopover);
-  });
+  };
+  clearTimeout(detachSelectTimer);
+  if (motionEnabled()) detachSelectTimer = setTimeout(detach, 110);
+  else queueMicrotask(detach);
 }
 
 function placeSelectPopover() {

@@ -15,11 +15,19 @@
     if (data.error) p.reject(new Error(data.error));
     else p.resolve(data.value);
   });
-  const api = Object.fromEntries(Object.entries(channels).map(([name, channel]) => [name, (...args) => new Promise((resolve, reject) => {
+  const send = (channel, args, files) => new Promise((resolve, reject) => {
     const id = ++next;
     pending.set(id, { resolve, reject });
-    chrome.webview.postMessage({ id, channel, args });
-  })]));
+    try {
+      if (files) chrome.webview.postMessageWithAdditionalObjects({ id, channel }, files);
+      else chrome.webview.postMessage({ id, channel, args });
+    } catch (error) {
+      pending.delete(id);
+      reject(error);
+    }
+  });
+  const api = Object.fromEntries(Object.entries(channels).map(([name, channel]) => [name, (...args) => send(channel, args)]));
+  api.previewDroppedImport = file => send('import:drop', [], [file]);
   api.onStatus = callback => {
     status.add(callback);
     return () => status.delete(callback);

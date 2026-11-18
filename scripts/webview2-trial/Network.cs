@@ -13,12 +13,16 @@ using System.Threading.Tasks;
 sealed class Network : IDisposable
 {
     readonly HttpClient http;
-    internal Network(object settings) {
+    readonly string transfers;
+    static readonly SemaphoreSlim[] fileLocks = Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
+    internal Network(object settings, string transferRoot = null, HttpMessageHandler transport = null) {
+        transfers = transferRoot;
         var handler = new HttpClientHandler { AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate, UseCookies = false,
             UseProxy = settings.S("proxyMode") != "direct" };
         if (settings.S("proxyMode") == "manual") handler.Proxy = new WebProxy(settings.S("proxy"));
-        http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("EBuildLauncher/0.1.1 (https://github.com/eee22323232/EBuild)");
+        http = new HttpClient(transport ?? handler) { Timeout = TimeSpan.FromSeconds(60) };
+        if (transport != null) handler.Dispose();
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("EBuildLauncher/0.1.2 (https://github.com/eee22323232/EBuild)");
     }
     public void Dispose() { http.Dispose(); }
     internal static Uri Https(string value) {
@@ -48,35 +52,85 @@ sealed class Network : IDisposable
     }
     internal async Task<object> Json(string url, CancellationToken ct) { return J.Parse(await Text(url, ct).ConfigureAwait(false)); }
     internal static string Hex(byte[] bytes) { return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant(); }
-    internal static bool Check(string path, object spec) {
-        if (!File.Exists(path)) return false;
+    internal static bool Check(string path, object spec) { return Check(new FileInfo(path), spec); }
+
+    static bool Check(FileInfo file, object spec) {
+        if (!file.Exists || file.Length == 0) return false;
         var size = spec.At("size");
-        if (size != null && new FileInfo(path).Length != Convert.ToInt64(size)) return false;
+        if (size != null && file.Length != Convert.ToInt64(size)) return false;
         foreach (var key in new[] { "sha512", "sha256", "sha1" }) {
             var expected = spec.S(key);
             if (expected.Length == 0) continue;
             using (HashAlgorithm hash = key == "sha512" ? (HashAlgorithm)SHA512.Create() : key == "sha256" ? (HashAlgorithm)SHA256.Create() : SHA1.Create())
-            using (var file = File.OpenRead(path)) if (!String.Equals(Hex(hash.ComputeHash(file)), expected, StringComparison.OrdinalIgnoreCase)) return false;
+            using (var input = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan))
+                if (!String.Equals(Hex(hash.ComputeHash(input)), expected, StringComparison.OrdinalIgnoreCase)) return false;
         }
-        return new FileInfo(path).Length > 0;
+        return true;
     }
-    internal async Task FileTo(object spec, string path, CancellationToken ct, string mirror = "") {
+    internal async Task FileTo(object spec, string path, CancellationToken ct, string mirror = "", LaunchChecks checks = null) {
+        var identity = String.Join(":", new[] { spec.S("sha512"), spec.S("sha256"), spec.S("sha1"), spec.S("size") });
+        var resumable = new[] { "sha512", "sha256", "sha1" }.Any(algorithm => System.Text.RegularExpressions.Regex.IsMatch(spec.S(algorithm),
+            "^[a-fA-F0-9]{" + (algorithm == "sha512" ? 128 : algorithm == "sha256" ? 64 : 40) + "}$"));
+        string key;
+        using (var hash = SHA256.Create()) key = Hex(hash.ComputeHash(Encoding.UTF8.GetBytes(resumable ? identity : Path.GetFullPath(path).ToUpperInvariant())));
+        var gate = fileLocks[Convert.ToInt32(key.Substring(0, 2), 16) % fileLocks.Length];
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try { await FileToCore(spec, path, ct, mirror, checks, resumable, key).ConfigureAwait(false); }
+        finally { gate.Release(); }
+    }
+    async Task FileToCore(object spec, string path, CancellationToken ct, string mirror, LaunchChecks checks, bool resumable, string key) {
         ct.ThrowIfCancellationRequested();
-        J.NoLinks(path);
-        if (Check(path, spec)) return;
+        var file = new FileInfo(path);
+        var stamp = checks == null ? null : LaunchChecks.Stamp(file);
+        if (checks != null && checks.Matches(path, spec, stamp)) return;
+        if (stamp != null) checks.CheckDirectory(path);
+        else J.NoLinks(path);
+        if (Check(file, spec)) {
+            if (checks != null) checks.Remember(path, spec, stamp);
+            return;
+        }
+        if (spec.S("url") == "") throw new IOException("加载器生成的文件缺失或损坏：" + file.Name);
+        // Re-check the complete path before replacing a file after a cache miss.
+        if (stamp != null) J.NoLinks(path);
         Directory.CreateDirectory(Path.GetDirectoryName(path));
-        var temp = path + "." + Guid.NewGuid().ToString("N") + ".part";
+        var temp = resumable && transfers != null ? J.Inside(transfers, key + ".part") : path + "." + Guid.NewGuid().ToString("N") + ".part";
+        var keep = resumable && transfers != null;
+        J.NoLinks(temp);
+        Directory.CreateDirectory(Path.GetDirectoryName(temp));
         var target = spec.S("url");
         var urls = mirror != "" && mirror != target ? new[] { mirror, target, target } : new[] { target, target };
+        long maxBytes = spec.At("size") == null ? 2L * 1024 * 1024 * 1024 : Convert.ToInt64(spec.At("size"));
         try {
+            if (keep && Check(temp, spec)) {
+                await CommitDownload(temp, path, ct).ConfigureAwait(false);
+                if (checks != null) checks.Remember(path, spec, LaunchChecks.Stamp(path));
+                return;
+            }
             for (int n = 0; n < urls.Length; n++) {
                 try {
-                    using (var response = await http.GetAsync(Https(urls[n]), HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false)) {
+                    J.NoLinks(temp);
+                    long offset = keep && File.Exists(temp) ? new FileInfo(temp).Length : 0;
+                    if (offset >= maxBytes) { File.Delete(temp); offset = 0; }
+                    using (var request = new HttpRequestMessage(HttpMethod.Get, Https(urls[n]))) {
+                        request.Headers.AcceptEncoding.ParseAdd("identity");
+                        if (offset > 0) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(offset, null);
+                        using (var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false)) {
+                        if ((int)response.StatusCode == 416) { File.Delete(temp); throw new IOException("续传范围失效，正在重新下载。"); }
                         response.EnsureSuccessStatusCode();
+                        var append = response.StatusCode == HttpStatusCode.PartialContent;
+                        var range = response.Content.Headers.ContentRange;
+                        if (append && (range == null || !range.HasRange || range.Unit != "bytes" || range.From != offset ||
+                            range.To < range.From || range.To >= maxBytes ||
+                            (spec.At("size") != null && range.Length != maxBytes) ||
+                            (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength != range.To - range.From + 1) ||
+                            response.Content.Headers.ContentEncoding.Any())) {
+                            File.Delete(temp);
+                            throw new IOException("服务器返回的续传数据无效。");
+                        }
+                        long bytes = append ? offset : 0;
                         using (var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
-                        using (var output = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 65536, true)) {
+                        using (var output = new FileStream(temp, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 65536, true)) {
                             var buffer = new byte[65536];
-                            long bytes = 0, maxBytes = spec.At("size") == null ? 2L * 1024 * 1024 * 1024 : Convert.ToInt64(spec.At("size"));
                             int count;
                             using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct)) {
                                 timeout.CancelAfter(TimeSpan.FromSeconds(60));
@@ -88,10 +142,13 @@ sealed class Network : IDisposable
                                 }
                             }
                         }
+                        // An interrupted response keeps its prefix for a later Range request.
+                        if (spec.At("size") != null && bytes < maxBytes) throw new IOException("下载连接提前结束，已保留进度。");
+                        }
                     }
-                    if (!Check(temp, spec)) throw new IOException("文件校验失败：" + Path.GetFileName(path));
-                    ct.ThrowIfCancellationRequested();
-                    if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
+                    if (!Check(temp, spec)) { File.Delete(temp); throw new IOException("文件校验失败：" + Path.GetFileName(path)); }
+                    await CommitDownload(temp, path, ct).ConfigureAwait(false);
+                    if (checks != null) checks.Remember(path, spec, LaunchChecks.Stamp(path));
                     return;
                 } catch (Exception error) {
                     ct.ThrowIfCancellationRequested();
@@ -99,9 +156,23 @@ sealed class Network : IDisposable
                 }
                 await Task.Delay(200, ct).ConfigureAwait(false);
             }
-        } finally { File.Delete(temp); }
+        } finally { if (!keep) File.Delete(temp); }
     }
-    internal static void Unzip(string file, string dest, CancellationToken ct, Func<string,string> map = null) {
+    static async Task CommitDownload(string source, string target, CancellationToken ct) {
+        // Stage beside the destination so replacement remains atomic even on another volume.
+        var stage = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        J.NoLinks(target); J.NoLinks(stage);
+        try {
+            using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, true))
+            using (var output = new FileStream(stage, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true))
+                await input.CopyToAsync(output, 65536, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            J.NoLinks(target);
+            if (File.Exists(target)) File.Replace(stage, target, null); else File.Move(stage, target);
+            File.Delete(source);
+        } finally { if (File.Exists(stage)) File.Delete(stage); }
+    }
+    internal static void Unzip(string file, string dest, CancellationToken ct, Func<string,string> map = null, Action extracted = null) {
         long total = 0;
         using (var zip = ZipFile.OpenRead(file)) foreach (var entry in zip.Entries) {
             ct.ThrowIfCancellationRequested();
@@ -113,6 +184,7 @@ sealed class Network : IDisposable
             J.NoLinks(output);
             Directory.CreateDirectory(Path.GetDirectoryName(output));
             entry.ExtractToFile(output, true);
+            if (extracted != null) extracted();
         }
     }
     internal static async Task Pool<T>(IEnumerable<T> input, int count, Func<T,Task> handle, CancellationToken ct) {
