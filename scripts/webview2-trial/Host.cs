@@ -10,7 +10,7 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("EBuild.Verification")]
 
-sealed class Host : Form
+sealed class Host : Form, LauncherWindow
 {
     const string Entry = "https://ebuild-trial.example/index.html";
     static readonly string BaseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -102,6 +102,11 @@ sealed class Host : Form
         };
     }
     void ToggleMax() { WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized; }
+    void LauncherWindow.Minimize() { WindowState = FormWindowState.Minimized; }
+    void LauncherWindow.Post(Action action) {
+        if (IsDisposed || !IsHandleCreated) return;
+        try { BeginInvoke(action); } catch (InvalidOperationException) { }
+    }
     static Button TitleButton(string name,string symbol,Action action) {
         var b = new Button { Text = symbol, AccessibleName = name, FlatStyle = FlatStyle.Flat, Dock = DockStyle.Right, Width = 45,
             ForeColor = Color.White, BackColor = Blue, Font = new Font("Segoe UI", 12F) };

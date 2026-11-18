@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Windows.Forms;
 
 sealed class GameProcesses
 {
@@ -16,11 +15,11 @@ sealed class GameProcesses
         internal bool Stopping, ForceAvailable, Logs;
     }
 
-    readonly Form window;
+    readonly LauncherWindow window;
     readonly Action<string,int?> changed;
     readonly Dictionary<string,Game> games = new Dictionary<string,Game>(StringComparer.OrdinalIgnoreCase);
 
-    internal GameProcesses(Form window, Action<string,int?> changed) {
+    internal GameProcesses(LauncherWindow window, Action<string,int?> changed) {
         this.window = window;
         this.changed = changed;
     }
@@ -112,11 +111,7 @@ sealed class GameProcesses
         var game = new Game { Id = id, Directory = directory, RecordDirectory = record, Process = process, Identity = Identity(process),
             ArgumentFile = argumentFile, Started = process.StartTime.ToUniversalTime(), Logs = logs };
         games.Add(id, game);
-        process.Exited += (s,e) => {
-            if (window.IsDisposed || !window.IsHandleCreated) return;
-            try { window.BeginInvoke((MethodInvoker)(() => Finish(game))); }
-            catch (InvalidOperationException) { }
-        };
+        process.Exited += (s,e) => { if (window != null) window.Post(() => Finish(game)); };
         process.EnableRaisingEvents = true;
         if (process.HasExited) Finish(game);
         else changed(id, null);

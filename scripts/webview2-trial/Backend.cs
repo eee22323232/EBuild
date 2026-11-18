@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 sealed partial class Backend
 {
-    readonly Form window;
+    readonly LauncherWindow window;
     readonly Action<object> notify;
     readonly string settingsFile, defaultRoot;
     readonly Accounts accounts;
@@ -28,7 +28,7 @@ sealed partial class Backend
     internal bool Leaving { get; private set; }
 
     sealed class LaunchRequest { internal string Id, Room; internal int ApprovedJava; internal DateTime Started; }
-    internal Backend(Form owner, string profile, Action<object> status) {
+    internal Backend(LauncherWindow owner, string profile, Action<object> status) {
         window = owner; notify = status;
         Directory.CreateDirectory(profile);
         defaultRoot = Path.Combine(profile, "游戏数据");
@@ -238,7 +238,7 @@ sealed partial class Backend
         var process = await Task.Run(() => minecraft.Launch(net, instance, baseSpec, dir, effective, account, java, progress, ct,
             beforeStart, room == null ? "" : room.Address), ct);
         games.Track(id, dir, process, InstanceRecord(id));
-        if (!Leaving && effective.S("afterLaunch") == "minimize") window.WindowState = FormWindowState.Minimized;
+        if (!Leaving && effective.S("afterLaunch") == "minimize") window.Minimize();
         return true;
     }
 
@@ -292,9 +292,9 @@ sealed partial class Backend
     }
 
     void ContinueLaunches() {
-        if (task != null || preparing != null || window == null || window.IsDisposed || !window.IsHandleCreated) return;
-        if (Leaving) window.BeginInvoke((MethodInvoker)(() => window.Close()));
-        else if (launchQueue.Count != 0) window.BeginInvoke((MethodInvoker)PrepareNext);
+        if (task != null || preparing != null || window == null) return;
+        if (Leaving) window.Post(window.Close);
+        else if (launchQueue.Count != 0) window.Post(PrepareNext);
     }
 
     async void PrepareNext() {
@@ -524,7 +524,7 @@ sealed partial class Backend
                 if (removed) SendGames();
                 return removed;
             case "game:stop": return await games.Stop(id, a.Arg(1).S());
-            case "game:minimize": window.WindowState = FormWindowState.Minimized; return true;
+            case "game:minimize": window.Minimize(); return true;
             case "game:keep-and-exit":
                 games.PersistAll();
                 Leaving = true;
