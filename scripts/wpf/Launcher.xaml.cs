@@ -12,7 +12,6 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
@@ -43,15 +42,20 @@ namespace EBuild.Native
         Func<Task<bool>> leavePage;
 
         [STAThread]
-        static void Main() {
+        static void Main(string[] args) {
             System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
             System.Net.ServicePointManager.DefaultConnectionLimit = 32;
             try {
                 var profile = LauncherProfile.Resolve();
+                if (LauncherUpdate.HandleWorker(profile, args)) return;
                 using (var mutex = new Mutex(false, LauncherProfile.MutexName(profile))) {
                     try { if (!mutex.WaitOne(0)) return; }
                     catch (AbandonedMutexException) { }
-                    try { new Application().Run(new Launcher(profile)); }
+                    try {
+                        var launcher = new Launcher(profile);
+                        launcher.updateStartupArgs = args;
+                        new Application().Run(launcher);
+                    }
                     finally { mutex.ReleaseMutex(); }
                 }
             } catch (Exception error) {
@@ -62,17 +66,17 @@ namespace EBuild.Native
         Launcher(string profile) {
             this.profile = profile;
             InitializeComponent();
-            var labels = new[] { "▤  实例", "↓  下载", "↔  联机", "⚙  设置", "◎  账号" };
+            var labels = new[] { "实例", "下载", "联机", "设置", "账号" };
             for (int index = 0; index < labels.Length; index++) {
                 int destination = index;
                 var button = Button(labels[index], () => Navigate(destination));
-                button.Margin = new Thickness(5, 6, 5, 6);
-                button.Foreground = Brushes.White;
-                button.BorderBrush = Brushes.Transparent;
+                button.Style = (Style)FindResource("NavigationButton");
+                button.ClearValue(MarginProperty);
                 button.IsEnabled = false;
                 nav.Add(button);
                 Navigation.Children.Add(button);
             }
+            Navigation.SizeChanged += (_, __) => MoveNavigationMark(false);
             ApplyTheme("system");
             CancelJob.Click += async (_, __) => await Guard(() => Call("task:cancel"));
             ViewInstalled.Click += async (_, __) => await Guard(() => ViewInstance(completedInstance));
@@ -105,11 +109,19 @@ namespace EBuild.Native
             ShowHome();
             Say(accountError == "" ? "就绪" : accountError);
             diagnosticsTimer.Start();
+            await InitializeUpdates();
             if (microsoft.B("needsRefresh")) await Guard(RefreshMicrosoft);
         }
 
         IntPtr System.Windows.Forms.IWin32Window.Handle => new WindowInteropHelper(this).Handle;
         void LauncherWindow.Minimize() { WindowState = WindowState.Minimized; }
+        void MinimizeWindow(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
+        void ToggleMaximizeWindow(object sender, RoutedEventArgs e) {
+            if (WindowState == WindowState.Maximized) SystemCommands.RestoreWindow(this);
+            else SystemCommands.MaximizeWindow(this);
+        }
+        void CloseWindow(object sender, RoutedEventArgs e) => Close();
+
         void LauncherWindow.Post(Action action) {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(action);
         }
@@ -144,7 +156,7 @@ namespace EBuild.Native
 
         Task<bool> CanLeavePage() => leavePage == null ? Task.FromResult(true) : leavePage();
 
-        StackPanel ShowPage(string name, int index, string title, Func<Task> back = null, bool animate = true) {
+        StackPanel ShowPage(string name, int index, string title, Func<Task> back = null, bool animate = true, UIElement headerActions = null) {
             var oldSection = section;
             route = name;
             progressBindings.Clear();
@@ -152,14 +164,20 @@ namespace EBuild.Native
             pageRevision++;
             leavePage = null;
             for (int i = 0; i < nav.Count; i++) {
-                nav[i].Background = Brush(i == index ? "#5278C3" : "#315BB2");
-                nav[i].BorderBrush = i == index ? Brush("#86A6F2") : Brushes.Transparent;
+                nav[i].Tag = i == index;
+                AutomationProperties.SetItemStatus(nav[i], i == index ? "当前页面" : "");
             }
+            if (oldSection != index || NavigationMark.Visibility != Visibility.Visible) MoveNavigationMark(animate);
             var panel = new StackPanel();
-            var header = new DockPanel();
+            var header = new DockPanel { LastChildFill = headerActions == null };
             var titleText = Heading(title, 23);
             titleText.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(titleText, Dock.Left);
             header.Children.Add(titleText);
+            if (headerActions != null) {
+                DockPanel.SetDock(headerActions, Dock.Right);
+                header.Children.Add(headerActions);
+            }
             if (back != null) {
                 var backButton = Button("← 返回", back);
                 backButton.Margin = new Thickness(0, 0, 12, 9);
@@ -170,15 +188,7 @@ namespace EBuild.Native
             Page.Children.Clear();
             Page.Children.Add(panel);
             PageScroll.ScrollToTop();
-            if (animate && (settings.S("motion") == "on" || settings.S("motion") != "off" && SystemParameters.ClientAreaAnimation)) {
-                var shift = new TranslateTransform();
-                panel.RenderTransform = shift;
-                var duration = TimeSpan.FromMilliseconds(175);
-                var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-                if (oldSection == index) shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(11, 0, duration) { EasingFunction = ease });
-                else shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(index > oldSection ? 16 : -16, 0, duration) { EasingFunction = ease });
-                panel.BeginAnimation(OpacityProperty, new DoubleAnimation(.65, 1, duration));
-            }
+            if (animate) AnimateEntrance(panel, Math.Sign(index - oldSection) * 22, oldSection == index ? 11 : 0);
             return panel;
         }
 
@@ -189,6 +199,7 @@ namespace EBuild.Native
             Resources["Card"] = Brush(dark ? "#222B39" : "#FFFFFF");
             Resources["Ink"] = Brush(dark ? "#EDF3FC" : "#182438");
             Resources["Muted"] = Brush(dark ? "#B0BFD2" : "#52637A");
+            Resources["AccentText"] = Brush(dark ? "#AFC5FF" : "#315BB2");
             Resources["Line"] = Brush(dark ? "#405069" : "#D7E0EA");
             Resources["Hover"] = Brush(dark ? "#314367" : "#EAF1FC");
             Resources["Danger"] = Brush(dark ? "#FFABA8" : "#AB332F");
@@ -288,8 +299,9 @@ namespace EBuild.Native
 
         async Task SelectInstance(string id) {
             await Call("instances:select", id);
+            bool changed = selected != id;
             selected = id;
-            UpdateHomeCard();
+            UpdateHomeCard(changed);
             UpdateLan();
         }
 
@@ -326,6 +338,7 @@ namespace EBuild.Native
         }
 
         protected override void OnClosed(EventArgs e) {
+            updateLifetime.Cancel();
             diagnosticsTimer.Stop();
             SystemEvents.UserPreferenceChanged -= SystemThemeChanged;
             base.OnClosed(e);
@@ -382,11 +395,11 @@ namespace EBuild.Native
             return text;
         }
 
-        static FrameworkElement Field(string caption, Control control, string hint = "") {
+        static FrameworkElement Field(string caption, Control control, string hint = "", UIElement controlBody = null) {
             AutomationProperties.SetName(control, caption);
             var label = new Label { Content = caption, Target = control, Padding = new Thickness(0, 0, 0, 4) };
             UseResource(label, Control.ForegroundProperty, "Ink");
-            var stack = Stack(label, control);
+            var stack = Stack(label, controlBody ?? control);
             if (hint != "") stack.Children.Add(Note(hint));
             stack.Margin = new Thickness(0, 0, 0, 9);
             return stack;

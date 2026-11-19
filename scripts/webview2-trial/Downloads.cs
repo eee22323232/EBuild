@@ -19,7 +19,7 @@ sealed partial class Backend
         var file = J.Inside(DownloadDirectory(id), "task.json");
         J.NoLinks(file);
         var record = J.Read(file);
-        if (record == null || record.S("id") != DownloadId(id) || !new[] { "game", "pack" }.Contains(record.S("kind")))
+        if (record == null || record.S("id") != DownloadId(id) || !new[] { "game", "pack", "lan" }.Contains(record.S("kind")))
             throw new IOException("下载任务不存在或记录已损坏。");
         return record;
     }
@@ -55,9 +55,10 @@ sealed partial class Backend
         }
         return list.OrderByDescending(x => x.S("created")).ToArray();
     }
-    object NewDownload(string id, string kind, object input, object remote = null, string source = "") {
+    object NewDownload(string id, string kind, object input, object remote = null, string source = "", object expected = null) {
         var record = J.Map("id", id, "kind", kind, "input", input, "state", "paused", "source", source,
             "remote", remote, "created", DateTime.UtcNow.ToString("o"), "message", "等待继续安装");
+        if (expected != null) record.Add("expected", expected);
         if (Directory.Exists(DownloadDirectory(id)) || Directory.Exists(InstanceRecord(id))) throw new IOException("该下载任务已存在，请从下载任务中继续。");
         SaveDownload(record);
         return record;
@@ -67,9 +68,56 @@ sealed partial class Backend
         id = id == "" ? Guid.NewGuid().ToString() : DownloadId(id);
         return Job((n,p,t) => RunDownload(NewDownload(id, "game", spec), n,p,t), "game-install");
     }
-    internal Task<object> CreatePackDownload(string file, object remote, string title) {
+    internal Task<object> CreatePackDownload(string file, object remote, string title, object expected = null) {
         var input = file == "" ? J.Map("name", title, "loader", "vanilla") : Spec(Resources.PackSpec(Resources.ReadPackIndex(file)));
-        return Job((n,p,t) => RunDownload(NewDownload(Guid.NewGuid().ToString(), "pack", input, remote, file), n,p,t), "game-install");
+        return Job((n,p,t) => RunDownload(NewDownload(Guid.NewGuid().ToString(), "pack", input, remote, file, expected), n,p,t), "game-install");
+    }
+
+    object OriginalPack(object instance) {
+        var id = instance.S("installationId");
+        if (id == "" || id != instance.S("id")) return null;
+        try {
+            var record = ReadDownload(id);
+            return record.S("kind") == "pack" ? LanPackFiles.Original(record.At("remote")) : null;
+        } catch (IOException) { return null; }
+        catch (ArgumentException) { return null; }
+        catch (InvalidOperationException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    string[] LanFileSources(object spec) {
+        return Instances().Where(item => !item.B("externalMissing") && item.S("version") == spec.S("version") &&
+            item.S("loader") == spec.S("loader") && item.S("loaderVersion") == spec.S("loaderVersion"))
+            .Select(item => InstancePath(item.S("id"))).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    async Task<object> DescribeLanDownload(string room) {
+        var plan = await multiplayer.CopyPlan(room, CancellationToken.None);
+        var files = plan.A("files");
+        if (files.Length == 0) return plan;
+        var sources = LanFileSources(plan);
+        var preview = await Task.Run(() => files.Select(file => J.Merge(file,
+            J.Map("reuse", LanRooms.MatchingFile(sources, file, CancellationToken.None) != null))).ToArray());
+        multiplayer.Guest(room);
+        return J.Merge(plan, J.Map("files", preview));
+    }
+
+    Task<object> CreateLanDownload(string room, string manifestKey) {
+        return Job(async (net, progress, ct) => {
+            var plan = await multiplayer.CopyPlan(room, ct);
+            if (plan.S("manifestKey") != manifestKey) throw new IOException("房间的共享清单有变化，请重新查看后下载。");
+            var input = Spec(plan);
+            var files = plan.A("files");
+            var record = NewDownload(Guid.NewGuid().ToString(), "lan", input, files, plan.S("shareKey"));
+            return await RunDownload(record, net, progress, ct);
+        }, "game-install");
+    }
+
+    async Task<object> CreateLanOriginal(string room, string confirmedHash) {
+        var plan = await multiplayer.CopyPlan(room, CancellationToken.None);
+        var original = plan.At("original");
+        if (original == null || original.S("sha512") != confirmedHash) throw new IOException("房主的原版整合包信息已变化，请重新查看。");
+        return await CreatePackDownload("", original, "好友房间 · 原版整合包", Spec(plan));
     }
     Task<object> ResumeDownload(string id) {
         return Job((n,p,t) => RunDownload(ReadDownload(id), n,p,t), "game-install");
@@ -100,10 +148,20 @@ sealed partial class Backend
                         File.Move(temporary, archive);
                     } finally { if (File.Exists(temporary)) File.Delete(temporary); }
                 }
-                record = J.Merge(record, J.Map("input", Spec(Resources.PackSpec(Resources.ReadPackIndex(archive)))));
+                var packSpec = Spec(Resources.PackSpec(Resources.ReadPackIndex(archive)));
+                var expected = record.At("expected");
+                if (expected != null && new[] { "version", "loader", "loaderVersion" }.Any(key => packSpec.S(key) != expected.S(key)))
+                    throw new IOException("原版整合包的游戏或加载器版本与房间不一致。请下载房主分享的实例文件。");
+                record = J.Merge(record, J.Map("input", packSpec));
                 SaveDownload(record);
                 notify(J.Map("downloadsChanged", true));
                 result = await resources.Pack(archive, net, progress, ct, id);
+            } else if (record.S("kind") == "lan") {
+                var files = LanModShare.Validate(record.At("remote"));
+                result = await Add(record.At("input"), net, progress, ct,
+                    files.Length == 0 ? (Func<string,Task>)null : dir => multiplayer.CopyFiles(record.S("source"), files, dir,
+                        LanFileSources(record.At("input")), progress, ct),
+                    downloadId: id);
             } else result = await Add(record.At("input"), net, progress, ct, downloadId: id);
             SaveDownload(J.Merge(record, J.Map("state", "complete", "message", "安装完成")));
             // Completed packs no longer need their private source copy. Keep only the task record.

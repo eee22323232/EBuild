@@ -4,15 +4,20 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace EBuild.Native
 {
     public partial class Launcher
     {
-        StackPanel homeCard;
+        ContentControl homeCard;
+        readonly Dictionary<string, (Button Row, TextBlock Mark)> instanceRows = new Dictionary<string, (Button, TextBlock)>();
         Button launchButton;
         Button stopButton;
         Button threadsButton;
@@ -24,50 +29,220 @@ namespace EBuild.Native
         bool checkingDiagnostics;
 
         void ShowHome() {
-            var page = ShowPage("home", 0, "实例");
-            threadsButton = Button("游戏线程", ShowThreads);
-            downloadsButton = Button("下载任务", () => ShowDownloadTasks());
-            var tools = Actions(Button("导入", ShowImport), threadsButton, downloadsButton);
-            tools.HorizontalAlignment = HorizontalAlignment.Right;
-            page.Children.Add(tools);
-            homeCard = Stack();
+            threadsButton = QuietAction("游戏线程", ShowThreads);
+            downloadsButton = QuietAction("下载任务", () => ShowDownloadTasks());
+            var tools = Actions(QuietAction("导入", ShowImport), threadsButton, downloadsButton);
+            tools.Margin = new Thickness(0, 0, 0, 6);
+            var page = ShowPage("home", 0, "实例", headerActions: tools);
+            page.MaxWidth = 1120;
+
+            homeCard = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, Margin = new Thickness(0, 6, 0, 18) };
             page.Children.Add(homeCard);
+            instanceRows.Clear();
             if (instances.Length != 0) {
-                page.Children.Add(Heading("已安装的实例"));
+                var add = QuietAction("＋ 新建实例", () => ShowInstall(""));
+                add.Margin = new Thickness(0, 0, 0, 4);
+                var libraryHeader = new DockPanel();
+                DockPanel.SetDock(add, Dock.Right);
+                libraryHeader.Children.Add(add);
+                var libraryTitle = Heading("已安装实例", 16);
+                libraryTitle.Margin = new Thickness(0, 0, 0, 4);
+                libraryTitle.VerticalAlignment = VerticalAlignment.Center;
+                libraryHeader.Children.Add(libraryTitle);
+                page.Children.Add(libraryHeader);
                 var list = Stack();
-                foreach (var instance in instances) {
-                    var row = Row(LoaderIcon(instance.S("loader"), 27), instance.S("name"),
-                        InstanceVersion(instance) + (instance.B("externalMissing") ? " · 路径丢失" : ""),
-                        Button("切换", () => SelectInstance(instance.S("id"))));
-                    var menu = new ContextMenu();
-                    AddMenu(menu, "启动游戏", () => StartGame(instance.S("id")));
-                    AddMenu(menu, "实例设置", () => { ShowInstanceSettings(instance); return Task.CompletedTask; });
-                    if (instance.B("externalMissing")) AddMenu(menu, "重新定位", () => Relocate(instance));
-                    AddMenu(menu, instance.S("externalPath") == "" ? "删除游戏" : "移除实例", () => DeleteInstance(instance, false));
-                    if (instance.B("canDeleteOriginal")) AddMenu(menu, "删除原游戏", () => DeleteInstance(instance, true));
-                    row.ContextMenu = menu;
-                    list.Children.Add(row);
-                }
-                page.Children.Add(Card(list));
-                page.Children.Add(Actions(Button("＋ 新建实例", () => ShowInstall(""))));
+                foreach (var instance in instances) list.Children.Add(InstanceRow(instance));
+                var library = new Border { Child = list, BorderThickness = new Thickness(0, 1, 0, 0) };
+                UseResource(library, Border.BorderBrushProperty, "Line");
+                page.Children.Add(library);
             }
-            homeAvatar = new Image { Width = 25, Height = 25, Margin = new Thickness(0, 0, 8, 0) };
+            UpdateHomeCard();
+        }
+
+        FrameworkElement InstanceRow(object instance) {
+            string id = instance.S("id");
+            var row = Button("", () => SelectInstance(id));
+            row.Style = (Style)FindResource("InstanceRowButton");
+            row.Margin = new Thickness(0);
+            AutomationProperties.SetName(row, InstanceLabel(instance) + (instance.B("externalMissing") ? " · 路径丢失" : ""));
+            var content = new Grid();
+            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
+            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(32) });
+            content.ColumnDefinitions.Add(new ColumnDefinition());
+            content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var mark = InstanceText("", 13, FontWeights.SemiBold);
+            mark.HorizontalAlignment = HorizontalAlignment.Center;
+            mark.VerticalAlignment = VerticalAlignment.Center;
+            UseResource(mark, TextBlock.ForegroundProperty, "AccentText");
+            content.Children.Add(mark);
+            var icon = LoaderIcon(instance.S("loader"), 22);
+            icon.HorizontalAlignment = HorizontalAlignment.Left;
+            Grid.SetColumn(icon, 1);
+            content.Children.Add(icon);
+            var title = InstanceText(instance.S("name"), 13);
+            title.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(title, 2);
+            content.Children.Add(title);
+            if (instance.B("externalMissing")) {
+                var warning = InstanceText("路径丢失", 11);
+                warning.VerticalAlignment = VerticalAlignment.Center;
+                warning.Margin = new Thickness(10, 0, 7, 0);
+                UseResource(warning, TextBlock.ForegroundProperty, "Danger");
+                Grid.SetColumn(warning, 3);
+                content.Children.Add(warning);
+            }
+            row.Content = content;
+            instanceRows.Add(id, (row, mark));
+
+            var menu = CreateActionMenu();
+            AddMenu(menu, "启动游戏", () => StartGame(id));
+            AddMenu(menu, "实例设置", () => { ShowInstanceSettings(instance); return Task.CompletedTask; });
+            if (instance.B("externalMissing")) AddMenu(menu, "重新定位", () => Relocate(instance));
+            AddMenu(menu, instance.S("externalPath") == "" ? "删除游戏" : "移除实例", () => DeleteInstance(instance, false), destructive: true);
+            if (instance.B("canDeleteOriginal")) AddMenu(menu, "删除原游戏", () => DeleteInstance(instance, true), destructive: true);
+            row.ContextMenu = menu;
+            var more = new Button { Content = "⋯", Width = 32, Padding = new Thickness(0), FontSize = 17,
+                VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center,
+                Style = (Style)FindResource("QuietButton") };
+            menu.CustomPopupPlacementCallback = (popup, target, _) => new[] {
+                new CustomPopupPlacement(new Point(target.Width - popup.Width, target.Height + 4), PopupPrimaryAxis.Horizontal),
+                new CustomPopupPlacement(new Point(target.Width - popup.Width, -popup.Height - 4), PopupPrimaryAxis.Horizontal)
+            };
+            more.Click += (_, __) => {
+                menu.PlacementTarget = more;
+                menu.Placement = PlacementMode.Custom;
+                menu.IsOpen = true;
+            };
+            menu.Closed += (_, __) => {
+                menu.ClearValue(ContextMenu.PlacementTargetProperty);
+                menu.ClearValue(ContextMenu.PlacementProperty);
+            };
+            AutomationProperties.SetName(more, "实例操作 · " + instance.S("name"));
+            var entry = new Grid();
+            entry.ColumnDefinitions.Add(new ColumnDefinition());
+            entry.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+            Grid.SetColumn(more, 1);
+            entry.Children.Add(row);
+            entry.Children.Add(more);
+            var details = InstanceDetails(instance, row);
+            var reveal = new Border { Child = details, ClipToBounds = true, Visibility = Visibility.Collapsed };
+            var line = new Border {
+                Child = Stack(entry, reveal), BorderThickness = new Thickness(0, 0, 0, 1), Background = Brushes.Transparent
+            };
+            UseResource(line, Border.BorderBrushProperty, "Line");
+            BindDetailsReveal(row, line, reveal, details, menu);
+            return line;
+        }
+
+        void BindDetailsReveal(Button row, Border line, Border reveal, Border details, ContextMenu menu) {
+            var hover = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(280) };
+            var expanded = false;
+            int transition = 0;
+
+            void Finish(bool open) {
+                reveal.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+                reveal.BeginAnimation(HeightProperty, null);
+                reveal.BeginAnimation(OpacityProperty, null);
+            }
+
+            void SetExpanded(bool open, bool animate = true) {
+                if (open == expanded && animate) return;
+                expanded = open;
+                var revision = ++transition;
+                if (!animate || !MotionEnabled) {
+                    Finish(open);
+                    return;
+                }
+
+                bool wasVisible = reveal.Visibility == Visibility.Visible;
+                double height = wasVisible ? reveal.ActualHeight : 0;
+                double opacity = wasVisible ? reveal.Opacity : 0;
+                reveal.Visibility = Visibility.Visible;
+                details.Measure(new Size(line.ActualWidth, double.PositiveInfinity));
+                var duration = TimeSpan.FromMilliseconds(open ? 175 : 125);
+                var size = new DoubleAnimation(height, open ? details.DesiredSize.Height : 0, duration) {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                size.Completed += (_, __) => {
+                    if (revision == transition) Finish(open);
+                };
+                reveal.BeginAnimation(HeightProperty, size);
+                reveal.BeginAnimation(OpacityProperty, new DoubleAnimation(opacity, open ? 1 : 0, duration));
+                if (open) AnimateEntrance(details, 0, 7);
+            }
+
+            void CloseDetails(bool animate) {
+                hover.Stop();
+                SetExpanded(false, animate);
+            }
+
+            hover.Tick += (_, __) => {
+                hover.Stop();
+                if (row.IsMouseOver && IsActive && !menu.IsOpen) SetExpanded(true);
+            };
+            row.MouseEnter += (_, __) => hover.Start();
+            row.MouseLeave += (_, __) => hover.Stop();
+            line.MouseLeave += (_, __) => CloseDetails(true);
+            line.Unloaded += (_, __) => CloseDetails(false);
+            menu.Opened += (_, __) => CloseDetails(false);
+        }
+
+        static Border InstanceDetails(object instance, Button row) {
+            string loaderVersion = instance.S("loaderVersion");
+            string version = InstanceVersion(instance) + (loaderVersion == "" ? "" : " " + loaderVersion);
+            string path = instance.S("externalPath");
+            string origin = path == "" ? "EBuild 管理的实例" :
+                (instance.B("externalMissing") ? "目录不可用 · " : "外部文件夹 · ") + path;
+            var versionText = InstanceText(version, 12);
+            var originText = InstanceText(origin, 11);
+            originText.Margin = new Thickness(0, 3, 0, 0);
+            if (path != "") originText.ToolTip = path;
+            UseResource(versionText, TextBlock.ForegroundProperty, "Muted");
+            UseResource(originText, TextBlock.ForegroundProperty, instance.B("externalMissing") ? "Danger" : "Muted");
+            AutomationProperties.SetHelpText(row, version + "。 " + origin);
+            var details = new Border {
+                Child = Stack(versionText, originText), VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(56, 0, 40, 6), Padding = new Thickness(9, 2, 0, 3), BorderThickness = new Thickness(1, 0, 0, 0)
+            };
+            UseResource(details, Border.BorderBrushProperty, "Line");
+            return details;
+        }
+
+        static TextBlock InstanceText(string value, double size, FontWeight? weight = null) =>
+            new TextBlock { Text = value, FontSize = size, FontWeight = weight ?? FontWeights.Normal,
+                TextTrimming = TextTrimming.CharacterEllipsis };
+
+        Button HomeAccountButton() {
+            homeAvatar = new Image { Width = 24, Height = 24, Margin = new Thickness(0, 0, 8, 0), SnapsToDevicePixels = true };
             RenderOptions.SetBitmapScalingMode(homeAvatar, BitmapScalingMode.NearestNeighbor);
-            homeIdentity = Text("");
-            var identity = Button("", () => Navigate(4));
-            identity.Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { homeAvatar, homeIdentity } };
-            var accounts = new ContextMenu();
+            homeIdentity = InstanceText("", 12);
+            homeIdentity.VerticalAlignment = VerticalAlignment.Center;
+            var identity = QuietAction("", () => Navigate(4));
+            identity.Padding = new Thickness(2, 3, 6, 3);
+            identity.MinHeight = 32;
+            identity.Margin = new Thickness(-3, 4, 0, 0);
+            identity.HorizontalAlignment = HorizontalAlignment.Left;
+            identity.MaxWidth = 200;
+            var person = new DockPanel();
+            DockPanel.SetDock(homeAvatar, Dock.Left);
+            person.Children.Add(homeAvatar);
+            person.Children.Add(homeIdentity);
+            identity.Content = person;
+            AutomationProperties.SetName(identity, "玩家账号");
+            var accounts = CreateActionMenu();
             AddMenu(accounts, "管理名称", () => ManageAppearance("name"));
             AddMenu(accounts, "管理皮肤", () => ManageAppearance("skin"));
             AddMenu(accounts, "管理披风", () => ManageAppearance("cape"));
             identity.ContextMenu = accounts;
-            page.Children.Add(Actions(identity));
             UpdateAccountIdentity();
-            UpdateHomeCard();
+            return identity;
         }
 
-        void AddMenu(ContextMenu menu, string title, Func<Task> action) {
-            var entry = new MenuItem { Header = title };
+        ContextMenu CreateActionMenu() => new ContextMenu { Style = (Style)FindResource("ActionMenu") };
+
+        void AddMenu(ContextMenu menu, string title, Func<Task> action, bool destructive = false) {
+            var entry = new MenuItem { Header = title, Style = (Style)FindResource("ActionMenuItem") };
+            if (destructive) UseResource(entry, Control.ForegroundProperty, "Danger");
             entry.Click += async (_, __) => await Guard(action);
             menu.Items.Add(entry);
         }
@@ -90,42 +265,87 @@ namespace EBuild.Native
             return row;
         }
 
-        void UpdateHomeCard() {
+        void UpdateHomeCard(bool animate = false) {
             if (route != "home" || homeCard == null) return;
-            homeCard.Children.Clear();
+            foreach (var pair in instanceRows) {
+                bool isSelected = pair.Key == selected;
+                pair.Value.Mark.Text = isSelected ? "✓" : "";
+                AutomationProperties.SetItemStatus(pair.Value.Row, isSelected ? "已选中" : "");
+            }
             launchButton = null;
             stopButton = null;
             var active = Active;
-            if (active == null) {
-                homeCard.Children.Add(Card(Row(LoaderIcon("vanilla", 52), "还没有游戏实例",
-                    "安装 Minecraft，或拖入游戏文件夹、整合包。", Button("新建实例", () => ShowInstall(""), true))));
-            } else {
-                string id = active.S("id");
-                launchButton = Button("启动游戏", () => StartGame(id), true);
-                stopButton = Button("停止", () => StopGame(id));
-                UseResource(stopButton, ForegroundProperty, "Danger");
-                var actions = Stack(launchButton,
-                    Button("实例设置", () => { ShowInstanceSettings(active); return Task.CompletedTask; }),
-                    stopButton);
-                if (active.B("externalMissing")) actions.Children.Add(Button("重新定位", () => Relocate(active)));
-                var details = Stack(Note("当前实例"), Heading(active.S("name"), 21),
-                    Note(InstanceVersion(active)), Note(active.B("externalMissing") ? "找不到游戏文件夹" : ""));
-                var showThread = Button("查看详情", ShowThreads);
-                showThread.Name = "CurrentThread";
-                details.Children.Add(Actions(showThread));
-                var row = new DockPanel();
-                var icon = LoaderIcon(active.S("loader"), 57);
-                icon.Margin = new Thickness(0, 0, 15, 0);
-                DockPanel.SetDock(icon, Dock.Left);
-                DockPanel.SetDock(actions, Dock.Right);
-                row.Children.Add(icon);
-                row.Children.Add(actions);
-                row.Children.Add(details);
-                homeCard.Children.Add(Card(row));
-                currentThread = showThread;
+            string id = active.S("id");
+            var identity = new DockPanel { VerticalAlignment = VerticalAlignment.Center };
+            var icon = LoaderIcon(active.S("loader"), 40);
+            icon.Margin = new Thickness(8, 0, 8, 0);
+            icon.VerticalAlignment = VerticalAlignment.Center;
+            DockPanel.SetDock(icon, Dock.Left);
+            identity.Children.Add(icon);
+            string title = active == null ? "还没有游戏实例" : active.S("name");
+            var name = InstanceText(title, 24, FontWeights.SemiBold);
+            name.ToolTip = title;
+            var caption = InstanceText(active == null ? "安装 Minecraft，或拖入游戏文件夹、整合包。" : InstanceVersion(active), 12);
+            UseResource(caption, TextBlock.ForegroundProperty, "Muted");
+            caption.Margin = new Thickness(0, 2, 0, 0);
+            var metadata = Stack(name, caption);
+            metadata.VerticalAlignment = VerticalAlignment.Center;
+            if (active.B("externalMissing")) {
+                var missing = InstanceText("找不到游戏文件夹", 12);
+                UseResource(missing, TextBlock.ForegroundProperty, "Danger");
+                missing.Margin = new Thickness(0, 4, 0, 0);
+                metadata.Children.Add(missing);
             }
+            metadata.Children.Add(HomeAccountButton());
+            identity.Children.Add(metadata);
+
+            var controls = Stack();
+            if (active == null) {
+                controls.Children.Add(InstancePrimary("新建实例", () => ShowInstall("")));
+            } else {
+                launchButton = InstancePrimary("启动游戏", () => StartGame(id));
+                controls.Children.Add(launchButton);
+                var secondary = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 3, 0, 0) };
+                currentThread = QuietAction("查看详情", ShowThreads);
+                stopButton = QuietAction("停止", () => StopGame(id));
+                UseResource(stopButton, Control.ForegroundProperty, "Danger");
+                secondary.Children.Add(currentThread);
+                secondary.Children.Add(stopButton);
+                if (active.B("externalMissing")) secondary.Children.Add(QuietAction("重新定位", () => Relocate(active)));
+                var settingsButton = QuietAction("实例设置", () => { ShowInstanceSettings(active); return Task.CompletedTask; });
+                settingsButton.Margin = new Thickness(0);
+                settingsButton.MinWidth = launchButton.MinWidth;
+                secondary.Children.Add(settingsButton);
+                controls.Children.Add(secondary);
+            }
+            controls.Margin = new Thickness(14, 0, 0, 0);
+            controls.MaxWidth = 310;
+            controls.VerticalAlignment = VerticalAlignment.Center;
+
+            var layout = new Grid();
+            layout.ColumnDefinitions.Add(new ColumnDefinition());
+            layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(controls, 1);
+            layout.Children.Add(identity);
+            layout.Children.Add(controls);
+            homeCard.Content = layout;
+            if (animate) AnimateEntrance(layout, 0, 10);
             UpdateGameControls();
             RenderDownloads();
+        }
+
+        Button QuietAction(string label, Func<Task> action) {
+            var button = Button(label, action);
+            button.Style = (Style)FindResource("QuietButton");
+            return button;
+        }
+
+        Button InstancePrimary(string label, Func<Task> action) {
+            var button = Button(label, action, true);
+            button.HorizontalAlignment = HorizontalAlignment.Right;
+            button.MinWidth = 112;
+            button.Margin = new Thickness(0);
+            return button;
         }
 
         Button currentThread;
@@ -156,7 +376,7 @@ namespace EBuild.Native
                 threadsButton.Visibility = games.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
                 threadsButton.Content = "游戏线程 · " + games.Length;
                 if (launchButton != null) {
-                    launchButton.Content = GameLabel(game);
+                    launchButton.Content = game == null ? "▶  启动游戏" : GameLabel(game);
                     launchButton.IsEnabled = Active != null && !Active.B("externalMissing") && game == null && !leaving;
                     stopButton.Visibility = game.S("state") == "running" ? Visibility.Visible : Visibility.Collapsed;
                     currentThread.Visibility = game == null ? Visibility.Collapsed : Visibility.Visible;

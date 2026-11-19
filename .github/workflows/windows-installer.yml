@@ -1,11 +1,13 @@
-name: Windows installer
+name: Windows WPF packages
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
     paths:
       - .github/workflows/windows-installer.yml
+      - scripts/wpf/**
       - scripts/webview2-trial/**
       - LICENSE
 
@@ -26,7 +28,7 @@ jobs:
         shell: powershell
         run: dotnet run --configuration Release --project scripts/webview2-trial/verify/EBuild.Verification.csproj
 
-      - name: Build the Windows x64 installer
+      - name: Build WPF installer and portable ZIP
         shell: powershell
         run: |
           $innoSetup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.4.exe'
@@ -42,21 +44,12 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Inno Setup installation failed ($($process.ExitCode))." }
 
           $output = Join-Path $env:RUNNER_TEMP 'EBuild-build'
-          $cache = Join-Path $env:RUNNER_TEMP 'EBuild-dependencies'
-          & .\scripts\webview2-trial\build.ps1 -Output $output -Cache $cache -Iscc (Join-Path $inno 'ISCC.exe')
+          & .\scripts\wpf\package.ps1 -Output $output -Iscc (Join-Path $inno 'ISCC.exe')
 
-          $installers = @(Get-ChildItem -LiteralPath $output -File -Filter 'EBuild-*-Windows-x64-Setup.exe')
-          if ($installers.Count -ne 1) { throw 'Expected one Windows x64 installer.' }
-          $installer = $installers[0]
-          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          $package = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'EBuild-installer')
-          Copy-Item -LiteralPath $installer.FullName -Destination $package.FullName
-          Set-Content -LiteralPath (Join-Path $package.FullName 'SHA256SUMS.txt') -Encoding ASCII -Value "$hash  $($installer.Name)"
-
-      - name: Upload the installer and checksum
+      - name: Upload WPF packages and checksums
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: EBuild-Windows-x64-Installer
-          path: ${{ runner.temp }}/EBuild-installer/
+          name: EBuild-WPF-Windows-x64
+          path: ${{ runner.temp }}/EBuild-build/assets/
           compression-level: 0
           if-no-files-found: error

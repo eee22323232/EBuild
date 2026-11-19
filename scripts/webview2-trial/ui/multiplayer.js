@@ -64,8 +64,10 @@ function renderLanControls() {
   el('lan-leave').textContent = room.host ? '关闭房间' : '退出联机';
   el('lan-rotate').disabled = working;
   el('lan-copy-code').disabled = working;
+  el('lan-copy-legacy').disabled = working;
   if (room.host) {
     if (el('lan-share-code').value !== room.invite) el('lan-share-code').value = room.invite;
+    el('lan-copy-legacy').hidden = !room.shortInvite;
     return;
   }
 
@@ -147,6 +149,9 @@ el('lan-join-form').addEventListener('submit', event => {
 });
 el('lan-copy-code').addEventListener('click', () => lanAction(async () => {
   if (await api.lanCopy('invite')) displayStatus('已复制邀请码');
+}));
+el('lan-copy-legacy').addEventListener('click', () => lanAction(async () => {
+  if (await api.lanCopy('legacy-invite')) displayStatus('已复制兼容长码');
 }));
 el('lan-copy-address').addEventListener('click', () => lanAction(async () => {
   if (await api.lanCopy('address')) displayStatus('已复制游戏地址');

@@ -3,11 +3,11 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild", "scripts\webview2-trial\EBuild.csproj", "{57436F9A-4842-4A59-A367-433F74FB7F6C}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild.Wpf", "scripts\wpf\EBuild.Wpf.csproj", "{AC2CF682-C2B4-4C51-83CC-F9270964A81F}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild.Verification", "scripts\webview2-trial\verify\EBuild.Verification.csproj", "{AE647C45-E427-415A-983B-7203E7EF4261}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild.Wpf", "scripts\wpf\EBuild.Wpf.csproj", "{AC2CF682-C2B4-4C51-83CC-F9270964A81F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EBuild.WebView2", "scripts\webview2-trial\EBuild.csproj", "{57436F9A-4842-4A59-A367-433F74FB7F6C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

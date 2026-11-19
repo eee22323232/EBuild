@@ -16,14 +16,21 @@ namespace EBuild.Native
         readonly AxisAngleRotation3D pitch = new AxisAngleRotation3D(new Vector3D(1, 0, 0), -8);
         static readonly BitmapSource DefaultSkin = BuildDefaultSkin();
         const int PreviewPixelsPerTexel = 8;
+        const double CameraFrameHeight = 41;
         Point drag;
 
         internal PlayerPreview() {
-            Height = 255;
+            Height = 230;
             Focusable = true;
             AutomationProperties.SetName(this, "角色模型，可用方向键旋转");
             RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
-            Camera = new OrthographicCamera(new Point3D(0, 0, 58), new Vector3D(0, 0, -1), new Vector3D(0, 1, 0), 39);
+            var camera = new OrthographicCamera(new Point3D(0, 0, 58), new Vector3D(0, 0, -1), new Vector3D(0, 1, 0), CameraFrameHeight);
+            Camera = camera;
+            SizeChanged += (_, e) => {
+                // WPF measures the camera width horizontally. Keep the vertical framing stable as the window resizes.
+                if (e.NewSize.Width > 0 && e.NewSize.Height > 0)
+                    camera.Width = CameraFrameHeight * e.NewSize.Width / e.NewSize.Height;
+            };
             body.Transform = new Transform3DGroup { Children = { new RotateTransform3D(yaw), new RotateTransform3D(pitch) } };
             Children.Add(new ModelVisual3D { Content = new AmbientLight(Colors.White) });
             Children.Add(new ModelVisual3D { Content = body });
@@ -52,13 +59,14 @@ namespace EBuild.Native
 
         internal static BitmapSource Avatar(BitmapSource skin) {
             skin = ValidSkin(skin);
+            const int faceSize = 8;
+            var bounds = new Rect(0, 0, faceSize, faceSize);
             var drawing = new DrawingVisual();
-            RenderOptions.SetBitmapScalingMode(drawing, BitmapScalingMode.NearestNeighbor);
             using (var layer = drawing.RenderOpen()) {
-                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(8, 8, 8, 8)), new Rect(0, 0, 32, 32));
-                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(40, 8, 8, 8)), new Rect(0, 0, 32, 32));
+                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(8, 8, faceSize, faceSize)), bounds);
+                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(40, 8, faceSize, faceSize)), bounds);
             }
-            var image = new RenderTargetBitmap(32, 32, 96, 96, PixelFormats.Pbgra32);
+            var image = new RenderTargetBitmap(faceSize, faceSize, 96, 96, PixelFormats.Pbgra32);
             image.Render(drawing);
             image.Freeze();
             return image;

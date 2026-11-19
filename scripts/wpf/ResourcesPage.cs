@@ -6,6 +6,7 @@ using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -42,16 +43,28 @@ namespace EBuild.Native
             internal ResourceSearch(Launcher host, string game, string selectedLoader, string selectedType) {
                 this.host = host;
                 version = Input(game, 64);
+                version.MinHeight = 34;
+                query.MinHeight = 34;
                 type = Picker(ResourceTypes, selectedType);
                 loader = Picker(FilterLoaders(), selectedLoader);
                 sort = Picker(new[] { Option("relevance", "相关性"), Option("downloads", "下载量"),
                     Option("updated", "最近更新"), Option("newest", "最新发布") });
-                more = host.Button("加载更多", () => Search(true));
+                more = host.QuietAction("加载更多", () => Search(true));
+                more.HorizontalAlignment = HorizontalAlignment.Center;
+                more.Margin = new Thickness(0, 8, 0, 0);
                 more.Visibility = Visibility.Collapsed;
-                Root = Stack(Field("搜索 Modrinth 资源", query),
+                var search = host.Button("搜索", () => Search(false), true);
+                search.MinWidth = 76;
+                search.VerticalAlignment = VerticalAlignment.Bottom;
+                search.Margin = new Thickness(12, 0, 0, 9);
+                var searchRow = new DockPanel();
+                DockPanel.SetDock(search, Dock.Right);
+                searchRow.Children.Add(search);
+                searchRow.Children.Add(Field("搜索 Modrinth 资源", query));
+                Root = Stack(searchRow,
                     Columns(Columns(Field("游戏版本", version), Field("资源类型", type)),
                         Columns(Field("加载器", loader), Field("排序", sort))),
-                    Actions(host.Button("搜索", () => Search(false), true)), status, results, more);
+                    DownloadListLine(status), results, more);
                 query.KeyDown += async (_, e) => { if (e.Key == Key.Enter) await host.Guard(() => Search(false)); };
                 foreach (var filter in new[] { type, loader, sort })
                     filter.SelectionChanged += async (_, __) => await host.Guard(() => Search(false));
@@ -75,21 +88,40 @@ namespace EBuild.Native
                     var found = data.A("hits");
                     count += found.Length;
                     status.Text = count == 0 ? "没有找到匹配资源。" : "Modrinth · " + count + " / " + data.I("total_hits") + " 个资源";
+                    int position = 0;
                     foreach (var project in found) {
                         var currentFilters = filters;
-                        var result = host.Button("", () => host.OpenResource(project.S("project_id"), currentFilters, Back));
+                        var result = host.QuietAction("", () => host.OpenResource(project.S("project_id"), currentFilters, Back));
                         result.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-                        result.Content = Row(host.ProjectImage(project, 40), project.S("title"),
-                            ResourceType(project.S("project_type")) + " · " + DownloadCount(project) + "\n" + project.S("description"));
+                        result.Margin = new Thickness(0);
+                        result.Padding = new Thickness(0, 9, 8, 9);
+                        UseResource(result, Control.ForegroundProperty, "Ink");
+                        AutomationProperties.SetName(result, "查看 " + project.S("title") + " 的详情");
+                        var image = host.ProjectImage(project, 36);
+                        image.Margin = new Thickness(0, 0, 12, 0);
+                        var title = InstanceText(project.S("title"), 14, FontWeights.SemiBold);
+                        var description = InstanceText(project.S("description"), 12);
+                        UseResource(description, TextBlock.ForegroundProperty, "Muted");
+                        var info = InstanceText(ResourceType(project.S("project_type")) + " · " + DownloadCount(project), 11);
+                        UseResource(info, TextBlock.ForegroundProperty, "Muted");
+                        var preview = new DockPanel();
+                        DockPanel.SetDock(image, Dock.Left);
+                        preview.Children.Add(image);
+                        preview.Children.Add(Stack(title, description, info));
+                        result.Content = preview;
                         result.ToolTip = project.S("description");
                         var row = new DockPanel();
-                        var quick = host.Button(project.S("project_type") == "modpack" ? "安装整合包" : "安装兼容版本",
+                        var quick = host.QuietAction(project.S("project_type") == "modpack" ? "安装整合包" : "安装兼容版本",
                             () => host.QuickInstall(project, currentFilters, Back));
                         quick.VerticalAlignment = VerticalAlignment.Center;
+                        quick.Margin = new Thickness(8, 0, 0, 0);
+                        UseResource(quick, Control.ForegroundProperty, "AccentText");
                         DockPanel.SetDock(quick, Dock.Right);
                         row.Children.Add(quick);
                         row.Children.Add(result);
-                        results.Children.Add(row);
+                        var line = DownloadListLine(row);
+                        results.Children.Add(line);
+                        if (position < 6) host.AnimateEntrance(line, 0, 9, position++ * 17);
                     }
                     more.Visibility = count < data.I("total_hits") && found.Length != 0 ? Visibility.Visible : Visibility.Collapsed;
                 } catch (Exception error) {

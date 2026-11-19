@@ -49,11 +49,11 @@ sealed class Minecraft
     internal async Task<object> Catalog(Network net, CancellationToken ct, bool force = false) {
         var cache = Path.Combine(Root, "versions.json");
         var preferred = Settings.S("downloadSource");
-        var saved = J.Read(cache);
+        var endpoints = preferred == "bmclapi" ? new[] { MirrorFor(Official), Official } : new[] { Official };
+        var saved = await Task.Run(() => J.Read(cache), ct).ConfigureAwait(false);
         var cached = saved == null ? null : J.Merge(saved, J.Map("cached", true));
         if (!force && cached != null && saved.S("preferredSource") == preferred &&
             DateTime.UtcNow - File.GetLastWriteTimeUtc(cache) < TimeSpan.FromMinutes(10)) return cached;
-        var endpoints = preferred == "bmclapi" ? new[] { MirrorFor(Official), Official } : new[] { Official };
         foreach (var endpoint in endpoints) {
             try {
                 var catalog = ParseCatalog(await net.Json(endpoint, ct).ConfigureAwait(false));

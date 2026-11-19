@@ -77,8 +77,8 @@
             </form>
             <form id="lan-join-form" class="lan-card">
               <h2>加入房间</h2>
-              <p>向房主索取邀请码。</p>
-              <label for="lan-code">邀请码</label><input id="lan-code" type="text" maxlength="1200" required autocomplete="off" spellcheck="false" placeholder="粘贴 EBuild 邀请码">
+              <p>短码可直接输入，字母大小写和连字符均可忽略。</p>
+              <label for="lan-code">邀请码</label><input id="lan-code" type="text" maxlength="1200" required autocomplete="off" spellcheck="false" placeholder="输入或粘贴 EBuild 邀请码">
               <button id="lan-join" type="submit" class="primary">加入房间</button>
             </form>
           </div>
@@ -87,7 +87,7 @@
             <p id="lan-room-version"></p>
             <div id="lan-room-host" class="lan-room-tools" hidden>
               <label for="lan-share-code">邀请码</label><input id="lan-share-code" readonly spellcheck="false">
-              <div class="actions"><button id="lan-copy-code" type="button" class="primary">复制邀请码</button><button id="lan-rotate" type="button">更换邀请码</button></div>
+              <div class="actions"><button id="lan-copy-code" type="button" class="primary">复制邀请码</button><button id="lan-rotate" type="button">更换邀请码</button><button id="lan-copy-legacy" type="button" hidden>复制兼容长码</button></div>
             </div>
             <div id="lan-room-guest" class="lan-room-tools" hidden>
               <label for="lan-address">游戏地址</label><input id="lan-address" readonly>

@@ -15,17 +15,20 @@ sealed class LanTunnel : IDisposable
     const string CoreHash = "da7eb2d24b5416f3d3407636949e964a0750e3f9dc53a828cb6799a57ead445d";
     const string CliHash = "d8783e851e944b44a9b71b39fd02f227ec0a2a82b3165c55ead5dd32dcde53a1";
     const string PacketHash = "c7c03a87eac7243ccbe331554624b18803010b740e311fc8cfddb573096eacac";
+    const string DownloadMirror = "https://edgeone.gh-proxy.org/";
     const string DreamLifeTcp = "tcp://dreamlife.indevs.in:11010";
     const string DreamLifeUdp = "udp://dreamlife.indevs.in:11010";
     internal static readonly string[] PublicNodes = {
         // The operator publishes both transports for use as a shared node.
         DreamLifeTcp,
+        DreamLifeUdp,
         "tcp://public.easytier.cn:11010",
         "tcp://public.easytier.top:11010"
     };
-    internal static bool IsPublicNode(string node) { return node == DreamLifeUdp || PublicNodes.Contains(node); }
+    internal static bool IsPublicNode(string node) { return PublicNodes.Contains(node); }
 
-    static string PeersFor(string node) {
+    static string PeersFor(string node, bool publicPeers) {
+        if (publicPeers) return String.Join(" ", PublicNodes);
         return node == DreamLifeTcp || node == DreamLifeUdp ? DreamLifeTcp + " " + DreamLifeUdp : node;
     }
     readonly Process process;
@@ -33,6 +36,7 @@ sealed class LanTunnel : IDisposable
     readonly string folder;
     readonly int rpcPort;
     internal readonly int LocalPort;
+    internal readonly int ModPort;
 
     internal static string NormalizeNode(string text) {
         var value = text.Trim();
@@ -59,9 +63,10 @@ sealed class LanTunnel : IDisposable
         Directory.CreateDirectory(runtime);
         var archiveName = "easytier-windows-x86_64-v" + Version + ".zip";
         var archive = J.Inside(runtime, archiveName);
-        progress("正在下载联机组件 · 约 33 MB");
-        await network.FileTo(J.Map("url", "https://github.com/EasyTier/EasyTier/releases/download/v" + Version + "/" + archiveName,
-            "size", 32657720, "sha256", "27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84"), archive, ct);
+        var url = "https://github.com/EasyTier/EasyTier/releases/download/v" + Version + "/" + archiveName;
+        progress("正在准备联机组件 · 缺少文件时优先使用国内加速");
+        await network.FileTo(J.Map("url", url, "size", 32657720,
+            "sha256", "27af91e270e554709b048bd32327fefd2dfce5062ae1e8701af7550c6f525f84"), archive, ct, DownloadMirror + url);
         ct.ThrowIfCancellationRequested();
         progress("正在校验联机组件");
         using (var zip = ZipFile.OpenRead(archive)) {
@@ -97,16 +102,21 @@ sealed class LanTunnel : IDisposable
         return info;
     }
 
-    internal LanTunnel(string folder, string node, string network, string secret, string hostIp, int worldPort, bool host) {
+    internal LanTunnel(string folder, string node, string network, string secret, string hostIp, int worldPort, bool host, int modPort = 0,
+            bool publicPeers = false) {
         this.folder = folder;
         rpcPort = LanWorld.FreeLoopbackPort();
         do { LocalPort = host ? 0 : LanWorld.FreeLoopbackPort(); } while (LocalPort == rpcPort);
+        if (!host && modPort != 0)
+            do { ModPort = LanWorld.FreeLoopbackPort(); } while (ModPort == rpcPort || ModPort == LocalPort);
         var ownIp = host ? hostIp : hostIp.Substring(0, hostIp.Length - 1) + "2";
+        var allowedPorts = host ? worldPort + (modPort == 0 ? "" : " " + modPort) : "0";
         var args = "--no-tun --bind-device false --disable-upnp --listeners udp://0.0.0.0:0" +
             " --relay-network-whitelist --udp-whitelist 0 --rpc-portal 127.0.0.1:" + rpcPort +
             " --ipv4 " + ownIp + "/24 --hostname " + (host ? "EBuild-Host" : "EBuild-Guest") +
-            " --tcp-whitelist " + (host ? worldPort : 0) + " --peers " + PeersFor(node);
+            " --tcp-whitelist " + allowedPorts + " --peers " + PeersFor(node, publicPeers);
         if (!host) args += " --dhcp --port-forward tcp://127.0.0.1:" + LocalPort + "/" + hostIp + ":" + worldPort;
+        if (ModPort != 0) args += " tcp://127.0.0.1:" + ModPort + "/" + hostIp + ":" + modPort;
         var info = StartInfo(folder, "easytier-core.exe", args);
         info.EnvironmentVariables["ET_NETWORK_NAME"] = network;
         info.EnvironmentVariables["ET_NETWORK_SECRET"] = secret;

@@ -340,17 +340,21 @@ sealed class Resources
                 await Network.Pool(entries,12,async entry => {
                     var target=J.Inside(dir,PackPath(entry.S("path")));
                     var hash=entry.At("hashes").S("sha512");
-                    if (!Regex.IsMatch(hash,"^[a-fA-F0-9]{128}$") || entry.At("fileSize") == null) throw new IOException("整合包文件缺少校验信息。");
+                    long size;
+                    if (!Regex.IsMatch(hash,"^[a-fA-F0-9]{128}$") || !long.TryParse(entry.S("fileSize"), out size) || size <= 0)
+                        throw new IOException("整合包文件缺少校验信息：" + entry.S("path"));
+                    string failure = "未提供受支持的下载地址。";
                     foreach (var value in entry.A("downloads")) {
                         Uri uri;
                         if (!Uri.TryCreate(value.S(),UriKind.Absolute,out uri) || uri.Scheme != "https" ||
                             !new[] {"cdn.modrinth.com","github.com","raw.githubusercontent.com","gitlab.com"}.Contains(uri.Host)) continue;
                         try {
-                            await net.FileTo(J.Map("url",uri.AbsoluteUri,"sha512",hash,"size",entry.At("fileSize")),target,ct);
+                            await net.FileTo(J.Map("url",uri.AbsoluteUri,"sha512",hash,"size",size,"sizeHint",true),target,ct);
                             progress("download","正在下载整合包文件",Interlocked.Increment(ref done),entries.Length); return;
-                        } catch (Exception e) { if (!(e is IOException) && !(e is System.Net.Http.HttpRequestException)) throw; }
+                        } catch (IOException error) { failure = error.Message; }
+                        catch (System.Net.Http.HttpRequestException) { failure = "无法从 " + uri.Host + " 下载。"; }
                     }
-                    throw new IOException("整合包文件下载失败：" + entry.S("path"));
+                    throw new IOException("整合包文件下载失败：" + entry.S("path") + "。" + failure);
                 },ct);
                 int overrideCount;
                 using (var archive = ZipFile.OpenRead(file)) overrideCount = archive.Entries.Count(entry =>

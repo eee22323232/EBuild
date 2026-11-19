@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -54,10 +55,13 @@ sealed class Network : IDisposable
     internal static string Hex(byte[] bytes) { return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant(); }
     internal static bool Check(string path, object spec) { return Check(new FileInfo(path), spec); }
 
+    // .mrpack fileSize is a progress hint. Only a SHA-512-pinned download may use it this way.
+    static bool SizeIsHint(object spec) { return spec.B("sizeHint") && Regex.IsMatch(spec.S("sha512"), "^[a-fA-F0-9]{128}$"); }
+
     static bool Check(FileInfo file, object spec) {
         if (!file.Exists || file.Length == 0) return false;
         var size = spec.At("size");
-        if (size != null && file.Length != Convert.ToInt64(size)) return false;
+        if (size != null && file.Length != Convert.ToInt64(size) && !SizeIsHint(spec)) return false;
         foreach (var key in new[] { "sha512", "sha256", "sha1" }) {
             var expected = spec.S(key);
             if (expected.Length == 0) continue;
@@ -67,7 +71,8 @@ sealed class Network : IDisposable
         }
         return true;
     }
-    internal async Task FileTo(object spec, string path, CancellationToken ct, string mirror = "", LaunchChecks checks = null) {
+    internal async Task FileTo(object spec, string path, CancellationToken ct, string mirror = "", LaunchChecks checks = null,
+            long? maxDownloadBytes = null) {
         var identity = String.Join(":", new[] { spec.S("sha512"), spec.S("sha256"), spec.S("sha1"), spec.S("size") });
         var resumable = new[] { "sha512", "sha256", "sha1" }.Any(algorithm => System.Text.RegularExpressions.Regex.IsMatch(spec.S(algorithm),
             "^[a-fA-F0-9]{" + (algorithm == "sha512" ? 128 : algorithm == "sha256" ? 64 : 40) + "}$"));
@@ -75,10 +80,11 @@ sealed class Network : IDisposable
         using (var hash = SHA256.Create()) key = Hex(hash.ComputeHash(Encoding.UTF8.GetBytes(resumable ? identity : Path.GetFullPath(path).ToUpperInvariant())));
         var gate = fileLocks[Convert.ToInt32(key.Substring(0, 2), 16) % fileLocks.Length];
         await gate.WaitAsync(ct).ConfigureAwait(false);
-        try { await FileToCore(spec, path, ct, mirror, checks, resumable, key).ConfigureAwait(false); }
+        try { await FileToCore(spec, path, ct, mirror, checks, resumable, key, maxDownloadBytes).ConfigureAwait(false); }
         finally { gate.Release(); }
     }
-    async Task FileToCore(object spec, string path, CancellationToken ct, string mirror, LaunchChecks checks, bool resumable, string key) {
+    async Task FileToCore(object spec, string path, CancellationToken ct, string mirror, LaunchChecks checks, bool resumable, string key,
+            long? maxDownloadBytes) {
         ct.ThrowIfCancellationRequested();
         var file = new FileInfo(path);
         var stamp = checks == null ? null : LaunchChecks.Stamp(file);
@@ -99,7 +105,12 @@ sealed class Network : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(temp));
         var target = spec.S("url");
         var urls = mirror != "" && mirror != target ? new[] { mirror, target, target } : new[] { target, target };
-        long maxBytes = spec.At("size") == null ? 2L * 1024 * 1024 * 1024 : Convert.ToInt64(spec.At("size"));
+        var sizeIsHint = SizeIsHint(spec);
+        long? declared = spec.At("size") == null ? (long?)null : Convert.ToInt64(spec.At("size"));
+        long? exact = sizeIsHint ? null : declared;
+        long maxBytes = declared ?? 2L * 1024 * 1024 * 1024;
+        if (sizeIsHint && declared.HasValue) maxBytes += Math.Min(1024 * 1024, long.MaxValue - maxBytes);
+        if (maxDownloadBytes.HasValue) maxBytes = Math.Min(maxBytes, maxDownloadBytes.Value);
         try {
             if (keep && Check(temp, spec)) {
                 await CommitDownload(temp, path, ct).ConfigureAwait(false);
@@ -121,12 +132,16 @@ sealed class Network : IDisposable
                         var range = response.Content.Headers.ContentRange;
                         if (append && (range == null || !range.HasRange || range.Unit != "bytes" || range.From != offset ||
                             range.To < range.From || range.To >= maxBytes ||
-                            (spec.At("size") != null && range.Length != maxBytes) ||
+                            (exact.HasValue && range.Length != exact) ||
+                            (range.HasLength && (range.Length <= range.To || range.Length > maxBytes)) ||
                             (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength != range.To - range.From + 1) ||
                             response.Content.Headers.ContentEncoding.Any())) {
                             File.Delete(temp);
                             throw new IOException("服务器返回的续传数据无效。");
                         }
+                        var responseLength = exact;
+                        if (sizeIsHint) responseLength = append ? range.Length : response.Content.Headers.ContentLength;
+                        if (responseLength > maxBytes) throw new IOException("下载文件大于预期。");
                         long bytes = append ? offset : 0;
                         using (var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
                         using (var output = new FileStream(temp, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 65536, true)) {
@@ -143,7 +158,7 @@ sealed class Network : IDisposable
                             }
                         }
                         // An interrupted response keeps its prefix for a later Range request.
-                        if (spec.At("size") != null && bytes < maxBytes) throw new IOException("下载连接提前结束，已保留进度。");
+                        if (bytes < responseLength) throw new IOException("下载连接提前结束，已保留进度。");
                         }
                     }
                     if (!Check(temp, spec)) { File.Delete(temp); throw new IOException("文件校验失败：" + Path.GetFileName(path)); }

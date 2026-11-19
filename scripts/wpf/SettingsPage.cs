@@ -46,7 +46,7 @@ namespace EBuild.Native
                     ShowHome();
                     Say("实例已导入");
                 })),
-                Note("EBuild dev.0.1.2 · WPF · MIT")))));
+                UpdateSettings()))));
             page.Children.Add(tabs);
             var save = Button("保存设置", async () => {
                 var values = J.Merge(editor.Read(true), J.Map("theme", Chosen(theme), "motion", Chosen(motion),

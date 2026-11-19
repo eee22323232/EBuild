@@ -7,6 +7,10 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>7.3</LangVersion>
     <AssemblyName>EBuild-WPF</AssemblyName>
+    <WpfReleaseVersion>0.1.3</WpfReleaseVersion>
+    <Version>$(WpfReleaseVersion)</Version>
+    <InformationalVersion>dev.$(WpfReleaseVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <RootNamespace>EBuild.Native</RootNamespace>
     <ApplicationIcon>..\webview2-trial\ui\icon.ico</ApplicationIcon>
     <ApplicationManifest>windows.manifest</ApplicationManifest>

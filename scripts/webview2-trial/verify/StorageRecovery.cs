@@ -73,6 +73,40 @@ static class StorageRecovery
         }
         Console.WriteLine("PASS: resume across Network lifetimes, ignored/invalid Range, 416, bad checksum and cancellation.");
     }
+    static void CheckPackSizes(string root) {
+        string digest;
+        using (var sha = SHA512.Create()) digest = Network.Hex(sha.ComputeHash(Payload));
+        foreach (var difference in new[] { -1, 1 }) {
+            var dir = Path.Combine(root, difference.ToString());
+            var target = Path.Combine(dir, "mod.jar");
+            var spec = J.Map("url", "https://example.invalid/mod.jar", "sha512", digest, "size", Payload.Length + difference, "sizeHint", true);
+            var handler = new Handler();
+            using (var net = new Network(J.Map("proxyMode", "direct"), Path.Combine(dir, "transfers"), handler)) {
+                int requests = 0;
+                handler.Respond = request => {
+                    if (++requests > 1) throw new HttpRequestException("fixture disconnection");
+                    var partial = Response(Payload.Take(5).ToArray());
+                    partial.Content.Headers.ContentLength = Payload.Length;
+                    return partial;
+                };
+                try { net.FileTo(spec, target, CancellationToken.None).GetAwaiter().GetResult(); }
+                catch (HttpRequestException) { }
+                handler.Respond = request => {
+                    Require(request.Headers.Range != null && request.Headers.Range.Ranges.Single().From == 5, "Resume the modpack prefix.");
+                    return Response(Payload.Skip(5).ToArray(), 5, Payload.Length);
+                };
+                net.FileTo(spec, target, CancellationToken.None).GetAwaiter().GetResult();
+                Require(File.ReadAllBytes(target).SequenceEqual(Payload), "Accept verified modpack files when the size hint is off.");
+                Require(!Network.Check(target, J.Merge(spec, J.Map("sizeHint", false))), "Ordinary downloads must enforce their declared size.");
+                handler.Respond = request => Response(new byte[Payload.Length]);
+                try {
+                    net.FileTo(spec, Path.Combine(dir, "corrupt.jar"), CancellationToken.None).GetAwaiter().GetResult();
+                    throw new Exception("A size hint must never bypass the hash check.");
+                } catch (IOException) { }
+            }
+        }
+        Console.WriteLine("PASS: modpack size hints accept verified content, including resumed transfers, while rejecting corruption.");
+    }
     static void Put(string root, string path, string content) {
         var file = J.Inside(root, path); Directory.CreateDirectory(Path.GetDirectoryName(file)); File.WriteAllText(file, content);
     }
@@ -132,6 +166,7 @@ static class StorageRecovery
     }
     internal static void Run(string root) {
         CheckTransfers(Path.Combine(root, "transfers"));
+        CheckPackSizes(Path.Combine(root, "pack-sizes"));
         CheckStorage(Path.Combine(root, "storage"));
         CheckTasks(Path.Combine(root, "profile"));
     }

@@ -36,7 +36,7 @@ sealed partial class Backend
         settings = J.Merge(J.Map("username", "Player", "accountMode", "offline", "offlineSkinModel", "classic", "selected", "", "dataRoot", "",
             "memory", 4096, "java", "", "width", 0, "height", 0, "afterLaunch", "keep",
             "theme", "system", "motion", "on", "concurrency", 12, "downloadSource", "bmclapi", "proxyMode", "system", "proxy", "", "lanNode", "",
-            "gc", "", "jvmArgs", new object[0], "gameArgs", new object[0], "logs", true), J.Read(settingsFile));
+            "gc", "", "jvmArgs", new object[0], "gameArgs", new object[0], "logs", true, "checkUpdatesOnStart", true), J.Read(settingsFile));
         accounts = new Accounts(profile);
         appearance = new LocalAppearance(profile);
         minecraft = new Minecraft(settings.S("dataRoot") == "" ? defaultRoot : settings.S("dataRoot"), settings);
@@ -244,6 +244,7 @@ sealed partial class Backend
 
     internal bool HasGameWork { get { return games.Count > 0 || preparing != null || launchQueue.Count > 0; } }
     internal bool HasLanWork { get { return multiplayer.HasWork; } }
+    internal bool HasActiveTask { get { return task != null; } }
 
     object GameSnapshot() {
         var active = games.Snapshot().ToList();
@@ -549,13 +550,19 @@ sealed partial class Backend
                 if (Leaving) return false;
                 var game = games.Find(id);
                 if (game == null) throw new IOException("请先通过 EBuild 启动房主游戏，再开放局域网。");
-                return await multiplayer.Create(Instance(id), game, Convert.ToInt32(a.Arg(1)));
+                var hosting = Instance(id);
+                var share = Object.Equals(a.Arg(2), true);
+                return await multiplayer.Create(hosting, game, Convert.ToInt32(a.Arg(1)), share, a.Arg(3), share ? OriginalPack(hosting) : null);
             case "lan:join": if (Leaving) return false; return await multiplayer.Join(id);
+            case "lan:copy-plan": return await DescribeLanDownload(id);
+            case "lan:install-copy": return await CreateLanDownload(id, a.Arg(1).S());
+            case "lan:install-original": return await CreateLanOriginal(id, a.Arg(1).S());
             case "lan:rotate": if (Leaving) return false; return await multiplayer.Rotate();
             case "lan:leave": multiplayer.Leave(); return true;
             case "lan:copy":
                 var snapshot = multiplayer.Snapshot().At("room");
-                var copied = id == "invite" ? snapshot.S("invite") : id == "address" ? snapshot.S("address") : "";
+                var copied = id == "invite" ? snapshot.S("invite") : id == "address" ? snapshot.S("address") :
+                    id == "legacy-invite" ? multiplayer.LegacyCode() : "";
                 if (copied == "") throw new IOException("联机信息已失效。");
                 Clipboard.SetText(copied);
                 return true;
