@@ -22,12 +22,21 @@ $files = @($launcher, "$launcher.config", (Join-Path $stage 'LICENSE'))
 Compress-Archive -LiteralPath $files -DestinationPath $zip -Force
 
 $setup = Join-Path $PSScriptRoot 'setup.iss'
+$language = Join-Path (Split-Path -Parent $Iscc) 'Languages/ChineseSimplified.isl'
+if (!(Test-Path -LiteralPath $language -PathType Leaf)) {
+    $language = Join-Path $outputDirectory 'ChineseSimplified.isl'
+    $languageUrl = 'https://raw.githubusercontent.com/jrsoftware/issrc/c34976f7d107e94d4fce8ac29f72ca33762293d7/Files/Languages/ChineseSimplified.isl'
+    & curl.exe -fLsS --retry 2 --connect-timeout 15 --max-time 45 $languageUrl -o $language
+    if ($LASTEXITCODE -ne 0 -or (Get-FileHash -LiteralPath $language).Hash -ne 'E0B0B350E2245F3C5E65586DFE43D574F6E7F06F2261149ABA284954B3FC9A8D') {
+        throw 'The Inno Setup Chinese language file could not be verified.'
+    }
+}
 # Windows PowerShell and Inno Setup both need a BOM to reliably read the Chinese strings.
 $iss = Join-Path $outputDirectory 'setup.iss'
 $icon = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\webview2-trial\ui\icon.ico'))
 $source = [IO.File]::ReadAllText($setup).Replace('..\webview2-trial\ui\icon.ico', $icon)
 [IO.File]::WriteAllText($iss, $source, [Text.UTF8Encoding]::new($true))
-& $Iscc /Qp "/DPayloadDir=$stage" "/DReleaseVersion=$version" "/O$assets" $iss
+& $Iscc /Qp "/DPayloadDir=$stage" "/DReleaseVersion=$version" "/DLanguageFile=$language" "/O$assets" $iss
 if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'WPF installer build failed.' }
 
 @($zip, $installer) | ForEach-Object {

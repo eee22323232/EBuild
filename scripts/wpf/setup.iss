@@ -20,7 +20,7 @@ Compression=lzma2
 SolidCompression=yes
 
 [Languages]
-Name: "zhcn"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "zhcn"; MessagesFile: "{#LanguageFile}"
 
 [Files]
 Source: "{#PayloadDir}\EBuild-WPF.exe"; DestDir: "{app}"; Flags: ignoreversion
