@@ -18,6 +18,7 @@ dotnet run --project .\scripts\wpf\EBuild.Wpf.csproj
 ## 找到要修改的代码
 
 - [scripts/wpf](scripts/wpf/) 保存主线界面。窗口样式在 [Launcher.xaml](scripts/wpf/Launcher.xaml)，各页面按功能分文件。
+- 首页和实例切换在 [HomePage.cs](scripts/wpf/HomePage.cs)，实例列表在 [InstancesPage.cs](scripts/wpf/InstancesPage.cs)，导入、设置和删除在 [InstanceActions.cs](scripts/wpf/InstanceActions.cs)，游戏线程在 [GameSessions.cs](scripts/wpf/GameSessions.cs)。
 - [Backend.cs](scripts/webview2-trial/Backend.cs) 分发界面调用。WPF 和历史 WebView2 版共用此目录的游戏后端。
 - [Minecraft.cs](scripts/webview2-trial/Minecraft.cs) 管版本、加载器和启动。[Resources.cs](scripts/webview2-trial/Resources.cs) 管 Modrinth 搜索、安装和版本替换。[ModIcons.cs](scripts/webview2-trial/ModIcons.cs) 从 JAR 读取模组图标。[Network.cs](scripts/webview2-trial/Network.cs) 管下载和文件校验。[Accounts.cs](scripts/webview2-trial/Accounts.cs) 管微软登录。
 - [Storage.cs](scripts/webview2-trial/Storage.cs) 统计数据目录并按预览清理；[Downloads.cs](scripts/webview2-trial/Downloads.cs) 保存游戏和整合包安装任务。文件续传数据放在 `cache/transfers`，任务和安装暂存放在 `downloads`，恢复任务应复用原实例 ID。
@@ -31,6 +32,13 @@ dotnet run --project .\scripts\webview2-trial\verify\EBuild.Verification.csproj
 ~~~
 
 这条命令在临时目录验证版本清单、文件校验、玩家数据复制、外部实例、分类清理和下载恢复。续传测试通过模拟 HTTP 响应覆盖 Range 支持、忽略或错误响应、416 和校验失败；任务测试覆盖暂停后重新载入和实例提交后的恢复。不需要 Minecraft、网络请求或微软账号。首次构建需要恢复 NuGet 依赖。
+
+下面的命令在临时档案验证实际 WPF 界面的首页切换、实例搜索和同名实例删除。安装包工作流也会对打包使用的同一份 EXE 运行这组验证。
+
+~~~powershell
+dotnet build .\scripts\wpf\EBuild.Wpf.csproj -c Release
+dotnet run -c Release --project .\scripts\wpf\verify\EBuild.Wpf.Verification.csproj -- .\scripts\wpf\bin\Release\net48\EBuild-WPF.exe
+~~~
 
 改了界面时，再用 Debug 配置打开对应页面。要给手动测试指定另一个空目录，可以用环境变量 EBUILD_CSHARP_PROFILE，例如以下 PowerShell 命令。
 
@@ -51,3 +59,5 @@ Remove-Item Env:EBUILD_CSHARP_PROFILE
 ~~~
 
 发布前提高 [项目文件](scripts/wpf/EBuild.Wpf.csproj)中的 `WpfReleaseVersion`。在 GitHub Releases 使用对应的 `dev.X.Y.Z` 标签，并附上 `assets` 目录下的安装器、ZIP 和 `WPF-SHA256SUMS.txt`。点击应用内更新时，两种安装方式都使用同一个 ZIP 替换启动器文件。Windows 安装记录中的版本号由安装器写入，应用内显示的是当前程序版本。
+
+「设置 → 启动器设置」里的更新面板同时显示源码提交。EXE 的「产品版本」包含完整提交哈希，工作区有本地改动时，应用内会标出。

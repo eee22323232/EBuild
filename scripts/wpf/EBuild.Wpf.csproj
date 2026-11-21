@@ -10,7 +10,6 @@
     <WpfReleaseVersion>0.1.3</WpfReleaseVersion>
     <Version>$(WpfReleaseVersion)</Version>
     <InformationalVersion>dev.$(WpfReleaseVersion)</InformationalVersion>
-    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <RootNamespace>EBuild.Native</RootNamespace>
     <ApplicationIcon>..\webview2-trial\ui\icon.ico</ApplicationIcon>
     <ApplicationManifest>windows.manifest</ApplicationManifest>
@@ -19,6 +18,7 @@
     <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="verify\**\*.cs" />
     <Compile Include="..\webview2-trial\*.cs" Exclude="..\webview2-trial\Host.cs" />
     <Resource Include="..\webview2-trial\ui\icon.ico" Link="icon.ico" />
     <Resource Include="..\webview2-trial\ui\icons\*.svg" Link="icons\%(Filename)%(Extension)" />
@@ -32,4 +32,22 @@
     <Reference Include="System.Web.ApplicationServices" />
     <Reference Include="System.Web.Extensions" />
   </ItemGroup>
+  <Target Name="RecordWorkingTreeStatus" BeforeTargets="GetAssemblyAttributes"
+          DependsOnTargets="InitializeSourceControlInformation" Condition="'$(SourceRevisionId)' != ''">
+    <Exec Command="git status --porcelain --untracked-files=normal" WorkingDirectory="$(MSBuildProjectDirectory)"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="Low" StandardErrorImportance="Low">
+      <Output TaskParameter="ConsoleOutput" ItemName="_WorkingTreeChanges" />
+      <Output TaskParameter="ExitCode" PropertyName="_GitStatusExitCode" />
+    </Exec>
+    <PropertyGroup>
+      <_WorkingTreeState Condition="'$(_GitStatusExitCode)' != '0'">unknown</_WorkingTreeState>
+      <_WorkingTreeState Condition="'$(_GitStatusExitCode)' == '0' and '@(_WorkingTreeChanges)' != ''">modified</_WorkingTreeState>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(_WorkingTreeState)' != ''">
+      <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+        <_Parameter1>WorkingTreeState</_Parameter1>
+        <_Parameter2>$(_WorkingTreeState)</_Parameter2>
+      </AssemblyAttribute>
+    </ItemGroup>
+  </Target>
 </Project>

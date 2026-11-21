@@ -25,7 +25,7 @@ namespace EBuild.Native
 
         static Image AssetIcon(string name, double size) {
             if (!iconSources.TryGetValue(name, out var icon)) {
-                var resource = Application.GetResourceStream(new Uri("pack://application:,,,/icons/" + name + ".svg"));
+                var resource = Application.GetResourceStream(new Uri("pack://application:,,,/EBuild-WPF;component/icons/" + name + ".svg"));
                 var drawing = new DrawingGroup();
                 using (var input = resource.Stream) {
                     foreach (var item in XDocument.Load(input).Root.Elements()) {

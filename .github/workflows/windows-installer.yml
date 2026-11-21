@@ -46,6 +46,12 @@ jobs:
           $output = Join-Path $env:RUNNER_TEMP 'EBuild-build'
           & .\scripts\wpf\package.ps1 -Output $output -Iscc (Join-Path $inno 'ISCC.exe')
 
+      - name: Verify the packaged WPF interface
+        shell: powershell
+        run: |
+          $launcher = Join-Path $env:RUNNER_TEMP 'EBuild-build\stage\EBuild-WPF.exe'
+          dotnet run --configuration Release --project scripts/wpf/verify/EBuild.Wpf.Verification.csproj -- $launcher
+
       - name: Upload WPF packages and checksums
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:

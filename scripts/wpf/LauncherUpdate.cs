@@ -24,6 +24,19 @@ namespace EBuild.Native
         static string CurrentExecutable => Assembly.GetExecutingAssembly().Location;
         internal static string CurrentTag => TagPrefix + Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
 
+        internal static string BuildSource {
+            get {
+                var assembly = Assembly.GetExecutingAssembly();
+                var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "";
+                int separator = version.IndexOf('+');
+                if (separator < 0 || separator == version.Length - 1) return "源码提交未知";
+                string revision = version.Substring(separator + 1);
+                var state = assembly.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(item => item.Key == "WorkingTreeState")?.Value;
+                return "源码 " + revision.Substring(0, Math.Min(12, revision.Length)) +
+                    (state == "modified" ? "（含未提交改动）" : state == "unknown" ? "（工作区状态未知）" : "");
+            }
+        }
+
         internal static Version ParseTag(string tag) {
             Version version;
             return Regex.IsMatch(tag, @"^dev\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\z") &&

@@ -387,7 +387,52 @@ namespace EBuild.Native
             return brush;
         }
 
+        static TextBlock InstanceText(string value, double size, FontWeight? weight = null) =>
+            new TextBlock { Text = value, FontSize = size, FontWeight = weight ?? FontWeights.Normal,
+                TextTrimming = TextTrimming.CharacterEllipsis };
+
+        ContextMenu CreateActionMenu() => new ContextMenu { Style = (Style)FindResource("ActionMenu") };
+
+        void AddMenu(ContextMenu menu, string title, Func<Task> action, bool destructive = false) {
+            var entry = new MenuItem { Header = title, Style = (Style)FindResource("ActionMenuItem") };
+            if (destructive) UseResource(entry, Control.ForegroundProperty, "Danger");
+            entry.Click += async (_, __) => await Guard(action);
+            menu.Items.Add(entry);
+        }
+
+        static DockPanel Row(Image icon, string title, string subtitle, params UIElement[] buttons) {
+            var row = new DockPanel { Margin = new Thickness(0, 0, 0, 5) };
+            if (icon != null) {
+                icon.Margin = new Thickness(0, 0, 10, 0);
+                DockPanel.SetDock(icon, Dock.Left);
+                row.Children.Add(icon);
+            }
+            if (buttons.Length != 0) {
+                var actions = Actions(buttons);
+                DockPanel.SetDock(actions, Dock.Right);
+                row.Children.Add(actions);
+            }
+            var label = Stack(Heading(title, 14), Note(subtitle));
+            label.VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(label);
+            return row;
+        }
+
+        Button QuietAction(string label, Func<Task> action) {
+            var button = Button(label, action);
+            button.Style = (Style)FindResource("QuietButton");
+            return button;
+        }
+
         static void UseResource(FrameworkElement element, DependencyProperty property, string key) => element.SetResourceReference(property, key);
+
+        static TextBox CatalogInput(string label, string value = "", int max = 0) {
+            var input = Input(value, max);
+            input.SetResourceReference(StyleProperty, "CatalogInput");
+            input.Tag = label;
+            AutomationProperties.SetName(input, label);
+            return input;
+        }
 
         Button Button(string label, Func<Task> action, bool primary = false) {
             var button = new Button { Content = label, Margin = new Thickness(0, 0, 6, 5), HorizontalAlignment = HorizontalAlignment.Stretch };

@@ -159,14 +159,6 @@ namespace EBuild.Native
             else if (tab == 1) await LoadModrinth();
         }
 
-        static TextBox CatalogInput(string label, string value = "", int max = 0) {
-            var input = Input(value, max);
-            input.SetResourceReference(StyleProperty, "CatalogInput");
-            input.Tag = label;
-            AutomationProperties.SetName(input, label);
-            return input;
-        }
-
         static Border DownloadListLine(UIElement content) {
             var line = new Border { Child = content, BorderThickness = new Thickness(0, 0, 0, 1) };
             UseResource(line, Border.BorderBrushProperty, "Line");
