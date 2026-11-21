@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -28,8 +29,9 @@ sealed class Accounts
         } finally { File.Delete(temp); }
     }
     static object Summary(object account) {
-        return account == null ? null : J.Map("name", account.S("name"), "skin", account.S("skin"),
-            "cape", account.S("cape"), "variant", account.S("variant"), "needsRefresh", !account.Obj().ContainsKey("skin"));
+        return account == null ? null : J.Map("id", account.S("id"), "name", account.S("name"), "skin", account.S("skin"),
+            "cape", account.S("cape"), "capeId", account.S("capeId"), "capes", account.A("capes"),
+            "variant", account.S("variant"), "needsRefresh", !account.Obj().ContainsKey("skin"));
     }
     internal object Summary() { return Summary(Load()); }
     internal void Logout() { File.Delete(file); }
@@ -70,36 +72,137 @@ sealed class Accounts
         var token = await Form(net, "token", ct, "client_id", Client, "grant_type", "refresh_token", "refresh_token", saved.S("refresh"), "scope", Scope);
         if (token.Item1 != 200) throw new IOException("微软登录已过期，请重新登录。");
         var account = await Exchange(net, token.Item2, ct);
+        RequireSameProfile(saved, account);
         ct.ThrowIfCancellationRequested();
         Save(account);
         return account;
     }
     internal async Task<object> RefreshProfile(Network net, CancellationToken ct) {
+        return Summary(await FetchProfile(net, ct));
+    }
+
+    async Task<object> FetchProfile(Network net, CancellationToken ct, string expectedId = null) {
         var account = Load();
         if (account == null) throw new IOException("请先登录微软账号。");
+        if (expectedId != null && (expectedId == "" || account.S("id") != expectedId))
+            throw new IOException("当前账号已切换，请重新打开修改窗口。");
         if (Convert.ToInt64(account.At("expires")) <= DateTime.UtcNow.AddMinutes(1).Ticks)
-            return Summary(await Renew(net, account, ct));
+            return await Renew(net, account, ct);
         var response = await net.Request(MinecraftService + "minecraft/profile", ct, token: account.S("token"));
-        if (response.Item1 == 401) return Summary(await Renew(net, account, ct));
-        var updated = J.Merge(account, ReadProfile(response));
+        if (response.Item1 == 401) return await Renew(net, account, ct);
         ct.ThrowIfCancellationRequested();
+        return SaveProfile(account, response);
+    }
+
+    internal async Task<object> ChangeName(Network net, string expectedId, string name, CancellationToken ct) {
+        if (!Regex.IsMatch(name, @"\A[A-Za-z0-9_]{3,16}\z"))
+            throw new IOException("Java 档案名须为 3–16 位字母、数字或下划线。");
+        var account = await FetchProfile(net, ct, expectedId);
+        if (name == account.S("name")) throw new IOException("当前已使用这个档案名。");
+        var route = MinecraftService + "minecraft/profile/name/" + Uri.EscapeDataString(name);
+        var limit = await net.Request(MinecraftService + "minecraft/profile/namechange", ct, token: account.S("token"));
+        RequireServiceSuccess(limit);
+        if (Equals(limit.Item2.At("nameChangeAllowed"), false))
+            throw new IOException("Minecraft 目前不允许此账号改名。Java 档案名每 30 天可更改一次。");
+        var available = await net.Request(route + "/available", ct, token: account.S("token"));
+        RequireServiceSuccess(available);
+        switch (available.Item2.S("status")) {
+            case "AVAILABLE": break;
+            case "DUPLICATE":
+                if (string.Equals(name, account.S("name"), StringComparison.OrdinalIgnoreCase)) break;
+                throw new IOException("这个档案名已被使用。");
+            case "NOT_ALLOWED": throw new IOException("Minecraft 不允许使用这个档案名。");
+            default: throw new IOException("暂时无法确认这个档案名是否可用。");
+        }
+        return await ApplyProfileChange(net, account, route, HttpMethod.Put, null, ct);
+    }
+
+    internal async Task<object> ChangeSkin(Network net, string expectedId, byte[] png, string variant, CancellationToken ct) {
+        if (png == null || png.Length == 0 || png.Length > 1024 * 1024) throw new IOException("请选择有效的 PNG 皮肤。");
+        if (variant != "classic" && variant != "slim") throw new IOException("请选择经典或纤细模型。");
+        var account = await FetchProfile(net, ct, expectedId);
+        using (var form = new MultipartFormDataContent()) {
+            form.Add(new StringContent(variant), "variant");
+            var file = new ByteArrayContent(png);
+            file.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+            form.Add(file, "file", "skin.png");
+            return await ApplyProfileChange(net, account, MinecraftService + "minecraft/profile/skins", HttpMethod.Post, form, ct);
+        }
+    }
+
+    internal async Task<object> ChangeCape(Network net, string expectedId, string capeId, CancellationToken ct) {
+        var account = await FetchProfile(net, ct, expectedId);
+        if (capeId != "" && !account.A("capes").Any(cape => cape.S("id") == capeId))
+            throw new IOException("当前账号没有这件披风，请重新打开披风管理。");
+        if (capeId == account.S("capeId")) return J.Map("profile", Summary(account), "synced", true);
+        string route = MinecraftService + "minecraft/profile/capes/active";
+        if (capeId == "") return await ApplyProfileChange(net, account, route, HttpMethod.Delete, null, ct);
+        using (var data = new StringContent(J.Dump(J.Map("capeId", capeId)), Encoding.UTF8, "application/json"))
+            return await ApplyProfileChange(net, account, route, HttpMethod.Put, data, ct);
+    }
+
+    async Task<object> ApplyProfileChange(Network net, object account, string url, HttpMethod method, HttpContent data, CancellationToken ct) {
+        Tuple<int,object> response;
+        try {
+            response = await net.Request(url, ct, data, account.S("token"), method);
+        } catch (Exception error) {
+            if (!(error is HttpRequestException) && (!(error is OperationCanceledException) || ct.IsCancellationRequested)) throw;
+            throw new IOException("未收到 Minecraft Services 的确认，请先刷新档案再重试。", error);
+        }
+        RequireServiceSuccess(response);
+        try {
+            if (response.Item2.At("skins") == null || response.Item2.At("capes") == null)
+                response = await net.Request(MinecraftService + "minecraft/profile", ct, token: account.S("token"));
+            return J.Map("profile", Summary(SaveProfile(account, response)), "synced", true);
+        } catch (Exception error) {
+            if (!(error is IOException || error is HttpRequestException || error is UnauthorizedAccessException ||
+                error is OperationCanceledException)) throw;
+            return J.Map("profile", Summary(account), "synced", false);
+        }
+    }
+
+    static void RequireServiceSuccess(Tuple<int,object> response) {
+        int status = response.Item1;
+        if (status >= 200 && status < 300) return;
+        if (status == 401) throw new IOException("Minecraft 登录已过期，请刷新正版档案后重试。");
+        if (status == 403) throw new IOException("Minecraft Services 拒绝了这项操作（HTTP 403）。也可以到 Minecraft 官网管理。");
+        if (status == 409) throw new IOException("账号档案发生冲突，请刷新档案后再试。");
+        if (status == 429) throw new IOException("Minecraft Services 请求过于频繁，请稍后重试。");
+        throw new IOException("Minecraft Services 未接受这项操作（HTTP " + status + "）。");
+    }
+
+    static void RequireSameProfile(object original, object updated) {
+        if (original.S("id") != updated.S("id")) throw new IOException("当前账号已切换，请重新打开修改窗口。");
+    }
+
+    object SaveProfile(object account, Tuple<int,object> response) {
+        var profile = ReadProfile(response);
+        RequireSameProfile(account, profile);
+        var updated = J.Merge(account, profile);
         Save(updated);
-        return Summary(updated);
+        return updated;
     }
     static string TextureUrl(object item) {
         Uri url;
         if (!Uri.TryCreate(item.S("url"), UriKind.Absolute, out url) || url.Host != "textures.minecraft.net" ||
             (url.Scheme != "http" && url.Scheme != "https") || !url.IsDefaultPort || url.UserInfo.Length != 0 ||
-            !System.Text.RegularExpressions.Regex.IsMatch(url.AbsolutePath, @"^/texture/[a-fA-F0-9]{32,64}$")) return "";
+            !Regex.IsMatch(url.AbsolutePath, @"^/texture/[a-fA-F0-9]{32,64}$")) return "";
         return "https://textures.minecraft.net" + url.AbsolutePath;
     }
     static object ReadProfile(Tuple<int,object> player) {
         if (player.Item1 != 200 || player.Item2.S("name") == "" || player.Item2.S("id") == "")
             throw new IOException("未找到 Minecraft Java 版玩家档案。");
         var skin = player.Item2.A("skins").FirstOrDefault(x => x.S("state") == "ACTIVE");
-        var cape = player.Item2.A("capes").FirstOrDefault(x => x.S("state") == "ACTIVE");
+        var capes = player.Item2.A("capes").Where(item => {
+            Guid capeId;
+            return Guid.TryParse(item.S("id"), out capeId);
+        })
+            .Select(item => J.Map("id", item.S("id"), "alias", item.S("alias"), "url", TextureUrl(item),
+                "active", item.S("state") == "ACTIVE")).ToArray();
+        var cape = capes.FirstOrDefault(item => item.B("active"));
         return J.Map("id", player.Item2.S("id"), "name", player.Item2.S("name"), "skin", TextureUrl(skin),
-            "cape", TextureUrl(cape), "variant", skin.S("variant") == "SLIM" ? "slim" : "classic");
+            "cape", cape.S("url"), "capeId", cape.S("id"), "capes", capes,
+            "variant", skin.S("variant") == "SLIM" ? "slim" : "classic");
     }
     static async Task<object> Exchange(Network net, object microsoft, CancellationToken ct) {
         var user = await Post(net, "https://user.auth.xboxlive.com/user/authenticate",

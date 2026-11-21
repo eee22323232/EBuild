@@ -14,8 +14,9 @@ static class StorageRecovery
     static void Require(bool value, string message) { if (!value) throw new Exception(message); }
     sealed class Handler : HttpMessageHandler {
         internal Func<HttpRequestMessage,HttpResponseMessage> Respond;
+        internal Func<HttpRequestMessage,CancellationToken,Task<HttpResponseMessage>> RespondAsync;
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
-            return Task.FromResult(Respond(request));
+            return RespondAsync == null ? Task.FromResult(Respond(request)) : RespondAsync(request, ct);
         }
     }
     static HttpResponseMessage Response(byte[] bytes, int offset = -1, long? total = null) {
@@ -107,6 +108,127 @@ static class StorageRecovery
         }
         Console.WriteLine("PASS: modpack size hints accept verified content, including resumed transfers, while rejecting corruption.");
     }
+
+    static void CheckSourceFallback(string root) {
+        Interrupted(root);
+        int mirrorRequests = 0, officialRequests = 0;
+        var handler = new Handler { Respond = request => {
+            if (request.RequestUri.Host == "bmclapi2.bangbang93.com") {
+                mirrorRequests++;
+                return new HttpResponseMessage((HttpStatusCode)429) {
+                    Headers = { RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(10)) }
+                };
+            }
+            officialRequests++;
+            long offset = request.Headers.Range == null ? 0 : request.Headers.Range.Ranges.Single().From.Value;
+            if (officialRequests == 1) Require(offset == 5, "A change of source must resume a verified prefix.");
+            return offset == 0 ? Response(Payload) : Response(Payload.Skip((int)offset).ToArray(), (int)offset, Payload.Length);
+        }};
+        var spec = J.Merge(DownloadSpec(), J.Map("url", "https://piston-data.mojang.com/file"));
+        using (var net = new Network(J.Map("proxyMode", "direct", "concurrency", 1), Path.Combine(root, "cache/transfers"), handler)) {
+            foreach (var name in new[] { "resumed.bin", "next.bin" })
+                net.FileTo(spec, Path.Combine(root, name), CancellationToken.None, "https://bmclapi2.bangbang93.com/file").GetAwaiter().GetResult();
+            var report = net.TransferStatus();
+            Require(report.S("switch").Contains("429") && report.S("switch").Contains("Mojang"), "Report the actual source change and reason.");
+            Require(Convert.ToInt64(report.At("bytes")) == Payload.Length * 2 - 5, "Speed must count only newly received bytes.");
+        }
+        Require(mirrorRequests == 1 && officialRequests == 2, "Avoid repeating requests to a rate-limited mirror.");
+        Require(File.ReadAllBytes(Path.Combine(root, "resumed.bin")).SequenceEqual(Payload), "Verify merged downloads before publishing.");
+        Console.WriteLine("PASS: mirror rate limit is bypassed across files, Range resumes on the official source, and the switch is reported.");
+    }
+
+    static async Task CheckMirrorTimeout(string root) {
+        var stalled = 0;
+        var handler = new Handler { RespondAsync = async (request, ct) => {
+            if (request.RequestUri.Host == "mirror.invalid") {
+                stalled++;
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+            return Response(Payload);
+        }};
+        using (var net = new Network(J.Map("proxyMode", "direct"), Path.Combine(root, "transfers"), handler))
+        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20))) {
+            await net.FileTo(DownloadSpec(), Path.Combine(root, "file.bin"), timeout.Token, "https://mirror.invalid/file");
+            Require(stalled == 1 && net.TransferStatus().S("switch").Contains("超时"), "A stalled mirror must give way to the next source.");
+        }
+        Console.WriteLine("PASS: source fallback cancels a stalled request before the ordinary deadline.");
+    }
+
+    static async Task CheckLoaderLists(string root) {
+        var settings = J.Map("proxyMode", "direct", "downloadSource", "bmclapi");
+        var minecraft = new Minecraft(root, settings);
+        var requests = new System.Collections.Generic.List<Uri>();
+        bool fail = false;
+        var handler = new Handler { Respond = request => {
+            var uri = request.RequestUri;
+            requests.Add(uri);
+            var response = new HttpResponseMessage(HttpStatusCode.OK) { RequestMessage = request };
+            if (fail || uri.AbsolutePath == "/forge/minecraft/1.20.1") {
+                response.StatusCode = HttpStatusCode.ServiceUnavailable;
+                response.Content = new StringContent("");
+            } else if (uri.Host == "files.minecraftforge.net") {
+                response.Content = new StringContent("{\"1.20.1\":[\"1.20.1-47.4.20\"]}");
+            } else if (uri.AbsolutePath == "/neoforge/list/1.21.1") {
+                response.Content = new StringContent("[{\"mcversion\":\"1.21.1\",\"version\":\"21.1.99\"},{\"mcversion\":\"1.21.2\",\"version\":\"21.2.3\"}]");
+            } else throw new Exception("Unexpected loader endpoint: " + uri);
+            return response;
+        }};
+        using (var net = new Network(settings, transport: handler)) {
+            var ct = CancellationToken.None;
+            const string mirror = "https://bmclapi2.bangbang93.com";
+            const string neoFile = "/net/neoforged/neoforge/21.1.99/neoforge-21.1.99-installer.jar";
+            const string fabricProfile = "/v2/versions/loader/1.20.1/0.18.4/profile/json";
+            Require(minecraft.MirrorFor("https://maven.neoforged.net/releases" + neoFile) == mirror + "/maven" + neoFile &&
+                minecraft.MirrorFor("https://meta.fabricmc.net" + fabricProfile) == mirror + "/fabric-meta" + fabricProfile &&
+                minecraft.MirrorFor("https://maven.minecraftforge.net/net/minecraftforge/test.jar") == mirror + "/maven/net/minecraftforge/test.jar",
+                "Loader profiles and installers should resolve to the configured mirror.");
+            var neo = await minecraft.Loaders(net, "1.21.1", "neoforge", ct);
+            Require(neo.A().Single().S("id") == "21.1.99" && requests.Count == 1 &&
+                requests[0].Host == "bmclapi2.bangbang93.com", "The NeoForge list should use the configured mirror.");
+            var forge = await minecraft.Loaders(net, "1.20.1", "forge", ct);
+            Require(forge.A().Single().S("id") == "47.4.20" && requests.Count == 3 &&
+                requests[2].Host == "files.minecraftforge.net", "An unavailable Forge mirror must fall back to the official list.");
+            var cached = await new Minecraft(root, settings).Loaders(net, "1.20.1", "forge", ct);
+            Require(cached.A().Single().S("id") == "47.4.20" && requests.Count == 3, "Reloading the launcher can reuse a fresh list.");
+            settings["downloadSource"] = "mojang";
+            Require(minecraft.MirrorFor("https://maven.neoforged.net/releases" + neoFile) == "", "Official mode never rewrites the installer URL.");
+            await minecraft.Loaders(net, "1.20.1", "forge", ct);
+            Require(requests.Count == 4 && requests[3].Host == "files.minecraftforge.net", "Official mode uses its own cache and source.");
+            fail = true;
+            var previous = await minecraft.Loaders(net, "1.20.1", "forge", ct, refresh: true);
+            Require(previous.A().Single().S("id") == "47.4.20" && requests.Count == 5, "A failed explicit refresh keeps the previously validated list.");
+        }
+        Console.WriteLine("PASS: loader mirror, official fallback, cache reuse, source settings, and refresh recovery.");
+    }
+
+    static async Task CheckConcurrency() {
+        var scheduler = new TransferScheduler(12);
+        var first = scheduler.For(new Uri("https://first.invalid/"));
+        var second = scheduler.For(new Uri("https://second.invalid/"));
+        int active = 0, peak = 0;
+        var sync = new object();
+        await Task.WhenAll(Enumerable.Range(0, 48).Select(async i => {
+            var host = i % 4 == 0 ? second : first;
+            await scheduler.Enter(host, false, CancellationToken.None);
+            lock (sync) peak = Math.Max(peak, ++active);
+            await Task.Delay(20);
+            lock (sync) active--;
+            scheduler.Leave(host, true, "", 0, false);
+        }));
+        Require(peak == 12, "Idle hosts may share the configured connection budget.");
+        Require(first.Limit == 12, "Fast responses should increase host concurrency up to the budget.");
+        await scheduler.Enter(first, false, CancellationToken.None);
+        scheduler.Leave(first, false, "rate limit", 1000, true);
+        Require(first.Limit == 6 && await scheduler.Enter(first, true, CancellationToken.None) == "rate limit",
+            "Rate limits reduce admission and immediately make an alternate available.");
+        using (var canceled = new CancellationTokenSource(30)) {
+            try {
+                await scheduler.Enter(first, false, canceled.Token);
+                throw new Exception("Waiting for a rate-limited source must be cancelable.");
+            } catch (OperationCanceledException) { }
+        }
+        Console.WriteLine("PASS: global cap, per-host ramp-up, throttling, and cancellation while awaiting a source.");
+    }
     static void Put(string root, string path, string content) {
         var file = J.Inside(root, path); Directory.CreateDirectory(Path.GetDirectoryName(file)); File.WriteAllText(file, content);
     }
@@ -167,6 +289,10 @@ static class StorageRecovery
     internal static void Run(string root) {
         CheckTransfers(Path.Combine(root, "transfers"));
         CheckPackSizes(Path.Combine(root, "pack-sizes"));
+        CheckSourceFallback(Path.Combine(root, "source-fallback"));
+        CheckMirrorTimeout(Path.Combine(root, "mirror-timeout")).GetAwaiter().GetResult();
+        CheckLoaderLists(Path.Combine(root, "loader-lists")).GetAwaiter().GetResult();
+        CheckConcurrency().GetAwaiter().GetResult();
         CheckStorage(Path.Combine(root, "storage"));
         CheckTasks(Path.Combine(root, "profile"));
     }

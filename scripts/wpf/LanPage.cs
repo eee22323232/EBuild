@@ -14,6 +14,8 @@ namespace EBuild.Native
         TextBox lanPort;
         TextBox lanInvite;
         TextBlock lanNotice;
+        Border lanFeedback;
+        TextBlock lanHostHint;
         StackPanel lanLobby;
         StackPanel lanRoom;
         Button lanOptions;
@@ -30,11 +32,9 @@ namespace EBuild.Native
         int suggestedPort;
 
         void ShowLan() {
-            var page = ShowPage("lan", 2, "好友联机");
             lanOptions = Button("联机设置", EditNode);
-            var tools = Actions(lanOptions);
-            tools.HorizontalAlignment = HorizontalAlignment.Right;
-            page.Children.Add(tools);
+            lanOptions.Margin = new Thickness(0, 0, 0, 10);
+            var page = ShowPage("lan", LanSection, "好友联机", headerActions: lanOptions);
             lanHosts = Picker(Array.Empty<Choice>());
             lanHosts.SelectionChanged += async (_, __) => {
                 if (!fillingHosts) {
@@ -46,8 +46,12 @@ namespace EBuild.Native
             };
             lanPort = Input("", 5);
             lanInvite = Input("", 1200);
-            lanShare = Check("允许好友下载实例文件", true);
+            lanInvite.FontFamily = new System.Windows.Media.FontFamily("Consolas");
+            lanShare = Check("共享实例文件", true);
+            lanShare.ToolTip = "允许好友下载实例文件";
+            lanShare.Margin = new Thickness(0, 0, 7, 0);
             lanShareOptions = Button("共享内容…", EditLanShareFiles);
+            lanShareOptions.Margin = new Thickness(0);
             ResetLanShareFiles();
             lanShare.Checked += (_, __) => UpdateLan();
             lanShare.Unchecked += (_, __) => UpdateLan();
@@ -61,16 +65,25 @@ namespace EBuild.Native
                 if (lanInvite.Text.Trim() == "") throw new IOException("请输入或粘贴房主的邀请码。");
                 await Call("lan:join", lanInvite.Text.Trim());
             }, true);
-            lanLobby = Stack(Columns(Card(Stack(Heading("创建房间"), Note("在单人世界中按 Esc，选择「对局域网开放」。"),
-                Field("房主实例", lanHosts), Field("局域网端口", lanPort), Actions(lanShare, lanShareOptions), Actions(lanDetect, lanCreate))),
-                Card(Stack(Heading("加入房间"), Field("邀请码", lanInvite, "短码可直接输入，字母大小写和连字符均可忽略。"), Actions(lanJoin)))));
+            lanHostHint = Note("");
+            var sharing = Actions(lanShare, lanShareOptions);
+            sharing.Margin = new Thickness(0);
+            var host = Card(Stack(Heading("创建房间"), lanHostHint, Field("房主实例", lanHosts),
+                Field("局域网端口", lanPort, controlBody: WithActions(lanPort, lanDetect)),
+                WithActions(sharing, lanCreate)));
+            var guest = Card(Stack(Heading("加入房间"), Note("向房主索取邀请码。"),
+                Field("邀请码", lanInvite, "短码支持直接输入，大小写和连字符均可忽略。"), Actions(lanJoin)));
+            lanLobby = Stack(Columns(Stack(host), Stack(guest)));
             lanRoom = Stack();
             lanNotice = Note("");
+            lanNotice.Margin = new Thickness(0);
+            lanNotice.VerticalAlignment = VerticalAlignment.Center;
             lanCancel = Button("取消联机操作", () => Call("lan:leave"));
+            lanFeedback = Card(WithActions(lanNotice, lanCancel));
+            lanFeedback.Padding = new Thickness(14, 8, 14, 8);
+            page.Children.Add(lanFeedback);
             page.Children.Add(lanLobby);
             page.Children.Add(lanRoom);
-            page.Children.Add(lanNotice);
-            page.Children.Add(Actions(lanCancel));
             lanHostKey = "";
             roomViewKey = "";
             suggestedPort = 0;
@@ -103,56 +116,76 @@ namespace EBuild.Native
             lanCancel.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
             string progress = lanState.S("progress");
             string notice = lanState.S("notice");
-            lanNotice.Text = progress != "" ? progress : notice != "" ? notice :
-                room == null && Chosen(lanHosts) == "" ? "通过 EBuild 启动游戏后，可在这里选择房主实例。" : "";
+            lanHostHint.Text = Chosen(lanHosts) == "" ? "先通过 EBuild 启动游戏，再在单人世界中对局域网开放。" :
+                "在单人世界中按 Esc，选择「对局域网开放」。";
+            SetLanNotice(progress != "" ? progress : notice);
             if (room == null) { roomViewKey = ""; lanRoom.Children.Clear(); return; }
             var compatible = instances.Where(item => !item.B("externalMissing") && item.S("version") == room.S("version") &&
                 item.S("loader") == room.S("loader") && (room.S("loaderVersion") == "" || item.S("loaderVersion") == room.S("loaderVersion"))).ToArray();
             var ready = compatible.Where(item => Minecraft.CanQuickJoin(item.S("version")) && Game(item.S("id")) == null).ToArray();
-            key = J.Dump(new object[] { room, working, ready.Select(item => item.S("id")).ToArray() });
+            key = J.Dump(new object[] { room, working, compatible.Length != 0, ready.Select(InstanceOption).Select(item => item.Label + "=" + item.Key).ToArray() });
             if (roomViewKey == key) return;
             roomViewKey = key;
             lanRoom.Children.Clear();
-            var host = room.B("host");
-            var content = Stack(Heading(host ? room.S("name") : "已加入好友房间"), Note(InstanceVersion(room) + " " + room.S("loaderVersion")),
-                Note(room.S("connection")));
-            if (host) {
-                var shortCode = room.B("shortInvite");
-                var code = Input(room.S("invite"), readOnly: true);
-                if (shortCode) code.FontFamily = new System.Windows.Media.FontFamily("Consolas");
-                content.Children.Add(Field("邀请码", code));
-                if (room.B("shareMods")) content.Children.Add(Note("已共享 " + room.I("sharedCount") + " 个实例文件"));
-                var copy = Button("复制邀请码", async () => { await Call("lan:copy", "invite"); Say("已复制邀请码"); }, true);
-                var rotate = Button("更换邀请码", async () => {
-                    if (Confirm("更换邀请码", "原邀请码将失效。是否生成新邀请码？")) await Call("lan:rotate");
-                });
-                copy.IsEnabled = rotate.IsEnabled = !working;
-                var roomActions = Actions(copy, rotate);
-                if (shortCode) {
-                    var legacy = Button("复制兼容长码", async () => { await Call("lan:copy", "legacy-invite"); Say("已复制兼容长码"); });
-                    legacy.IsEnabled = !working;
-                    roomActions.Children.Add(legacy);
-                }
-                content.Children.Add(roomActions);
-            } else {
-                content.Children.Add(Field("游戏地址", Input(room.S("address"), readOnly: true)));
-                content.Children.Add(Actions(Button("复制地址", () => Call("lan:copy", "address"))));
-                content.Children.Add(Note("也可以在 Minecraft 的「多人游戏 → 直接连接」中粘贴此地址。"));
-                content.Children.Add(new Expander { Header = "遇到「无效会话」？", Content =
-                    Note("房主可能要求正版验证。请用拥有 Java 版资格的微软账号重新登录，然后重启 Minecraft。") });
-                if (ready.Length != 0) {
-                    var choicesForGuest = Picker(ready.Select(InstanceOption), selected);
-                    content.Children.Add(Field("同版本实例", choicesForGuest));
-                    content.Children.Add(Actions(Button("启动并加入", () => StartGame(Chosen(choicesForGuest), 0, room.S("id")), true)));
-                } else content.Children.Add(Note(compatible.Length == 0 ? "本机缺少同版本实例。" :
-                    "可以从已打开的游戏复制地址加入。"));
-                bool shared = room.B("shareMods");
-                if (shared || compatible.Length == 0) content.Children.Add(Actions(
-                    Button(room.B("packFiles") ? "下载同款整合包" : shared ? "下载相同实例" : "下载同版本游戏",
-                        () => DownloadRoomInstance(room.S("id")), ready.Length == 0)));
+            bool host = room.B("host");
+            var connection = room.S("connection");
+            var version = (InstanceVersion(room) + " " + room.S("loaderVersion")).TrimEnd();
+            if (connection != "") version += "  ·  " + connection;
+            var title = Stack(Heading(host ? room.S("name") : "已加入好友房间"), Note(version));
+            lanRoom.Children.Add(Card(WithActions(title, Button(host ? "关闭房间" : "退出联机", () => Call("lan:leave")))));
+            if (host) ShowHostRoom(room, working);
+            else ShowGuestRoom(room, ready, compatible.Length != 0);
+        }
+
+        void ShowHostRoom(object room, bool working) {
+            bool shortCode = room.B("shortInvite");
+            var code = Input(room.S("invite"), readOnly: true);
+            if (shortCode) {
+                code.FontFamily = new System.Windows.Media.FontFamily("Consolas");
+                code.FontSize = 16;
             }
-            content.Children.Add(Actions(Button(host ? "关闭房间" : "退出联机", () => Call("lan:leave"))));
+            var copy = Button("复制邀请码", async () => { await Call("lan:copy", "invite"); Say("已复制邀请码"); }, true);
+            var rotate = Button("更换邀请码", async () => {
+                if (Confirm("更换邀请码", "原邀请码将失效。是否生成新邀请码？")) await Call("lan:rotate");
+            });
+            copy.IsEnabled = rotate.IsEnabled = !working;
+            var actions = Actions(rotate);
+            if (shortCode) {
+                var legacy = Button("复制兼容长码", async () => { await Call("lan:copy", "legacy-invite"); Say("已复制兼容长码"); });
+                legacy.IsEnabled = !working;
+                actions.Children.Add(legacy);
+            }
+            var content = Stack(Field("邀请码", code, controlBody: WithActions(code, copy)), actions);
+            if (room.B("shareMods")) content.Children.Add(Note("已共享 " + room.I("sharedCount") + " 个实例文件"));
             lanRoom.Children.Add(Card(content));
+        }
+
+        void ShowGuestRoom(object room, object[] ready, bool hasCompatible) {
+            var game = Stack(Heading("使用同版本实例", 15));
+            if (ready.Length != 0) {
+                var choices = Picker(ready.Select(InstanceOption), selected);
+                game.Children.Add(Field("同版本实例", choices));
+                game.Children.Add(Actions(Button("启动并加入", () => StartGame(Chosen(choices), 0, room.S("id")), true)));
+            } else {
+                game.Children.Add(Note(hasCompatible ? "可以在已打开的游戏里通过地址加入。" : "本机缺少同版本实例。"));
+            }
+            bool shared = room.B("shareMods");
+            if (shared || !hasCompatible) game.Children.Add(Actions(
+                Button(room.B("packFiles") ? "下载同款整合包" : shared ? "下载相同实例" : "下载同版本游戏",
+                    () => DownloadRoomInstance(room.S("id")), ready.Length == 0)));
+            var address = Input(room.S("address"), readOnly: true);
+            address.FontFamily = new System.Windows.Media.FontFamily("Consolas");
+            var manual = Stack(Heading("手动连接", 15), Field("游戏地址", address,
+                "在 Minecraft 的「多人游戏 → 直接连接」中粘贴地址。",
+                WithActions(address, Button("复制地址", () => Call("lan:copy", "address")))),
+                new Expander { Header = "遇到「无效会话」？", Content =
+                    Note("房主可能要求正版验证。请用拥有 Java 版资格的微软账号重新登录，然后重启 Minecraft。") });
+            lanRoom.Children.Add(Columns(Stack(Card(game)), Stack(Card(manual))));
+        }
+
+        void SetLanNotice(string message) {
+            lanNotice.Text = message;
+            lanFeedback.Visibility = message != "" || lanState.B("working") ? Visibility.Visible : Visibility.Collapsed;
         }
 
         void ResetLanShareFiles() {
@@ -240,7 +273,7 @@ namespace EBuild.Native
             if (revision != pageRevision || id != Chosen(lanHosts)) return;
             suggestedPort = port;
             if (port > 0 && lanPort.Text == "") lanPort.Text = port.ToString();
-            if (explicitRequest) lanNotice.Text = port > 0 ? "已识别端口 " + port : "暂未识别。请开放局域网，或填入游戏聊天栏显示的端口。";
+            if (explicitRequest) SetLanNotice(port > 0 ? "已识别端口 " + port : "暂未识别。请开放局域网，或填入游戏聊天栏显示的端口。");
         }
 
         async Task EditNode() {

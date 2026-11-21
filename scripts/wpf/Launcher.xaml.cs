@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -19,6 +20,8 @@ namespace EBuild.Native
 {
     public partial class Launcher : Window, LauncherWindow
     {
+        const int HomeSection = 0, InstancesSection = 1, DownloadsSection = 2, LanSection = 3, SettingsSection = 4, AccountsSection = 5;
+
         readonly string profile;
         readonly List<Button> nav = new List<Button>();
         readonly DispatcherTimer diagnosticsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
@@ -66,7 +69,7 @@ namespace EBuild.Native
         Launcher(string profile) {
             this.profile = profile;
             InitializeComponent();
-            var labels = new[] { "实例", "下载", "联机", "设置", "账号" };
+            var labels = new[] { "首页", "实例", "下载", "联机", "设置", "账号" };
             for (int index = 0; index < labels.Length; index++) {
                 int destination = index;
                 var button = Button(labels[index], () => Navigate(destination));
@@ -122,6 +125,11 @@ namespace EBuild.Native
         }
         void CloseWindow(object sender, RoutedEventArgs e) => Close();
 
+        void ApplyExpanderHeaderFocus(object sender, RoutedEventArgs e) {
+            if (sender is Expander expander && expander.Template?.FindName("HeaderSite", expander) is ToggleButton header)
+                header.FocusVisualStyle = (Style)expander.FindResource(SystemParameters.FocusVisualStyleKey);
+        }
+
         void LauncherWindow.Post(Action action) {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(action);
         }
@@ -146,20 +154,23 @@ namespace EBuild.Native
         async Task Navigate(int index) {
             if (!await CanLeavePage()) return;
             switch (index) {
-                case 0: ShowHome(); break;
-                case 1: await ShowDownloads(); break;
-                case 2: ShowLan(); break;
-                case 3: ShowSettings(); break;
-                case 4: ShowAccounts(); break;
+                case HomeSection: ShowHome(); break;
+                case InstancesSection: ShowInstances(); break;
+                case DownloadsSection: await ShowDownloads(); break;
+                case LanSection: ShowLan(); break;
+                case SettingsSection: ShowSettings(); break;
+                case AccountsSection: ShowAccounts(); break;
             }
         }
 
         Task<bool> CanLeavePage() => leavePage == null ? Task.FromResult(true) : leavePage();
 
-        StackPanel ShowPage(string name, int index, string title, Func<Task> back = null, bool animate = true, UIElement headerActions = null) {
+        StackPanel ShowPage(string name, int index, string title, Func<Task> back = null, bool animate = true,
+            UIElement headerActions = null, FrameworkElement titleContent = null) {
             var oldSection = section;
             route = name;
             progressBindings.Clear();
+            UpdateFooterProgress();
             section = index;
             pageRevision++;
             leavePage = null;
@@ -170,7 +181,7 @@ namespace EBuild.Native
             if (oldSection != index || NavigationMark.Visibility != Visibility.Visible) MoveNavigationMark(animate);
             var panel = new StackPanel();
             var header = new DockPanel { LastChildFill = headerActions == null };
-            var titleText = Heading(title, 23);
+            var titleText = titleContent ?? Heading(title, 23);
             titleText.VerticalAlignment = VerticalAlignment.Center;
             DockPanel.SetDock(titleText, Dock.Left);
             header.Children.Add(titleText);
@@ -195,14 +206,21 @@ namespace EBuild.Native
         void ApplyTheme(string theme) {
             bool dark = theme == "dark" || theme != "light" &&
                 Equals(Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize", "AppsUseLightTheme", 1), 0);
-            Resources["Canvas"] = Brush(dark ? "#151B27" : "#EAF0F6");
-            Resources["Card"] = Brush(dark ? "#222B39" : "#FFFFFF");
-            Resources["Ink"] = Brush(dark ? "#EDF3FC" : "#182438");
-            Resources["Muted"] = Brush(dark ? "#B0BFD2" : "#52637A");
-            Resources["AccentText"] = Brush(dark ? "#AFC5FF" : "#315BB2");
-            Resources["Line"] = Brush(dark ? "#405069" : "#D7E0EA");
-            Resources["Hover"] = Brush(dark ? "#314367" : "#EAF1FC");
-            Resources["Danger"] = Brush(dark ? "#FFABA8" : "#AB332F");
+            Resources["Canvas"] = Brush(dark ? "#191D23" : "#F2F3F5");
+            Resources["Card"] = Brush(dark ? "#222831" : "#FCFCFD");
+            Resources["Ink"] = Brush(dark ? "#E8ECF2" : "#3D3D3D");
+            Resources["Muted"] = Brush(dark ? "#BFC7D3" : "#666666");
+            Resources["Line"] = Brush(dark ? "#3B4654" : "#D9DEE5");
+            Resources["Hover"] = Brush(dark ? "#2E3E54" : "#E8EDF4");
+            Resources["Accent"] = Brush(dark ? "#47689C" : "#3E608F");
+            Resources["AccentText"] = Brush(dark ? "#B0C8EA" : "#385A89");
+            Resources["AccentHover"] = Brush(dark ? "#83A0CC" : "#6884AC");
+            Resources["DropOverlay"] = Brush(dark ? "#E647689C" : "#E63E608F");
+            Resources["Danger"] = Brush(dark ? "#F5ABA5" : "#A53D3D");
+            Resources["BetaFill"] = Brush(dark ? "#3D3324" : "#F7EDDA");
+            Resources["BetaText"] = Brush(dark ? "#EDC786" : "#805615");
+            Resources["AlphaFill"] = Brush(dark ? "#3D3348" : "#EFE9F4");
+            Resources["AlphaText"] = Brush(dark ? "#D6BEE8" : "#69517D");
         }
 
         void SystemThemeChanged(object sender, UserPreferenceChangedEventArgs args) {
@@ -220,6 +238,15 @@ namespace EBuild.Native
                 return;
             }
             if (leaving) return;
+            string startedInstance = update.S("instanceStarted");
+            if (startedInstance != "") {
+                int index = Array.FindIndex(instances, item => item.S("id") == startedInstance);
+                if (index >= 0) {
+                    instances[index] = J.Merge(instances[index], J.Map("lastLaunch", update.S("lastLaunch")));
+                    RenderInstanceLibrary();
+                }
+                return;
+            }
             if (update.At("games") != null) {
                 games = update.A("games");
                 UpdateGameControls();
@@ -248,11 +275,7 @@ namespace EBuild.Native
             if (phase == "") return;
             jobProgress = update;
             jobActive = phase != "idle" && phase != "error";
-            int total = update.I("total");
-            Progress.Visibility = jobActive ? Visibility.Visible : Visibility.Collapsed;
-            Progress.IsIndeterminate = jobActive && total <= 0;
-            Progress.Maximum = Math.Max(1, total);
-            Progress.Value = update.I("done");
+            UpdateFooterProgress();
             CancelJob.Visibility = jobActive && phase != "starting" && phase != "deleting" ? Visibility.Visible : Visibility.Collapsed;
             Say(ProgressLabel(update));
             if (phase == "device") deviceCode = update.S("code");
@@ -260,6 +283,19 @@ namespace EBuild.Native
             UpdateDeviceCode();
             UpdateDownloadProgress();
             UpdateGameControls();
+        }
+
+        void UpdateFooterProgress() {
+            bool download = jobProgress.S("kind") == "game-install";
+            bool show = jobActive && (!download || progressBindings.Count == 0);
+            Progress.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            if (!show) return;
+            int total = jobProgress.I("total");
+            Progress.Style = download ? (Style)FindResource("DownloadProgressBar") : null;
+            Progress.Tag = download && MotionEnabled ? "Animate" : null;
+            Progress.IsIndeterminate = total <= 0;
+            Progress.Maximum = Math.Max(1, total);
+            Progress.Value = jobProgress.I("done");
         }
 
         static string ProgressLabel(object update) {
@@ -283,7 +319,8 @@ namespace EBuild.Native
                 if (!changed) return;
                 instances = updated;
                 if (Active == null) selected = instances.FirstOrDefault().S("id");
-                if (route == "home") ShowHome();
+                if (route == "instances") ShowInstances();
+                if (route == "home") UpdateHomeCard();
                 UpdateLan();
             } finally { checkingExternal = false; }
         }
@@ -294,7 +331,7 @@ namespace EBuild.Native
             if (FindInstance(id) == null) { Say("实例已移除。"); return; }
             await SelectInstance(id);
             ViewInstalled.Visibility = Visibility.Collapsed;
-            ShowHome();
+            ShowInstances();
         }
 
         async Task SelectInstance(string id) {
@@ -447,6 +484,23 @@ namespace EBuild.Native
             return columns;
         }
 
+        static Grid WithActions(FrameworkElement content, params Button[] buttons) {
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0) };
+            foreach (var button in buttons) {
+                button.Margin = new Thickness(0, 0, 5, 0);
+                actions.Children.Add(button);
+            }
+            buttons[buttons.Length - 1].Margin = new Thickness(0);
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition());
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(actions, 1);
+            row.Children.Add(content);
+            row.Children.Add(actions);
+            return row;
+        }
+
         static TabItem Tab(string title, UIElement child) => new TabItem { Header = title, Content = child };
         static string Loader(string key) => LoaderOptions.FirstOrDefault(item => item.Key == key)?.Label ?? key;
         static readonly Choice[] LoaderOptions = { Option("vanilla", "原版"), Option("fabric", "Fabric"),
@@ -516,8 +570,16 @@ namespace EBuild.Native
 
             internal void Accept() { value = true; Close(); }
 
-            internal Task<bool?> Result(string submit, Func<Task<bool>> validate = null, TextBox confirmation = null, string exact = "") {
-                Add("取消", () => { Close(); return Task.CompletedTask; });
+            internal Task<bool?> Result(string submit, Func<Task<bool>> validate = null, TextBox confirmation = null, string exact = "",
+                bool cancelByDefault = false) {
+                var cancel = Add("取消", () => { Close(); return Task.CompletedTask; });
+                if (cancelByDefault) {
+                    cancel.IsDefault = true;
+                    ContentRendered += (_, __) => cancel.Focus();
+                    PreviewKeyDown += (_, e) => {
+                        if (e.Key == Key.Escape) { e.Handled = true; Close(); }
+                    };
+                }
                 var button = Add(submit, async () => { if (validate == null || await validate()) Accept(); }, true);
                 if (confirmation != null) {
                     button.IsEnabled = confirmation.Text == exact;

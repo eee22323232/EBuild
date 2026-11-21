@@ -28,6 +28,18 @@ sealed class LocalAppearance
 
     internal void Import(string part, string source) {
         var target = ImagePath(part);
+        var png = ReadPng(part, source);
+        Directory.CreateDirectory(folder);
+        var temporary = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try {
+            File.WriteAllBytes(temporary, png);
+            if (File.Exists(target)) File.Replace(temporary, target, null);
+            else File.Move(temporary, target);
+        } finally { File.Delete(temporary); }
+    }
+
+    internal static byte[] ReadPng(string part, string source) {
+        if (part != "skin" && part != "cape") throw new IOException("请选择皮肤或披风。");
         var invalid = part == "skin" ? "请使用 64 × 64 或 64 × 32 的 Minecraft PNG 皮肤。" :
             "请使用 64 × 32 的 Minecraft PNG 披风，或该尺寸的 2、4、8 倍图。";
         using (var stream = File.OpenRead(source)) {
@@ -40,20 +52,18 @@ sealed class LocalAppearance
                 (width == 64 || width == 128 || width == 256 || width == 512) && height == width / 2;
             if (!valid) throw new IOException(invalid);
             stream.Position = 0;
-            Directory.CreateDirectory(folder);
-            var temporary = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try {
-                using (var image = Image.FromStream(stream, false, true)) {
+                using (var image = Image.FromStream(stream, false, true))
+                using (var png = new MemoryStream()) {
                     if (image.RawFormat.Guid != ImageFormat.Png.Guid || image.Width != width || image.Height != height)
                         throw new IOException(invalid);
-                    image.Save(temporary, ImageFormat.Png);
+                    image.Save(png, ImageFormat.Png);
+                    if (png.Length > MaxBytes) throw new IOException("图片文件太大。");
+                    return png.ToArray();
                 }
-                if (new FileInfo(temporary).Length > MaxBytes) throw new IOException("图片文件太大。");
-                if (File.Exists(target)) File.Replace(temporary, target, null);
-                else File.Move(temporary, target);
             } catch (ArgumentException) {
                 throw new IOException(invalid);
-            } finally { File.Delete(temporary); }
+            }
         }
     }
 

@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -17,6 +18,15 @@ namespace EBuild.Native
     {
         static readonly Choice[] ResourceTypes = { Option("", "全部类型"), Option("mod", "模组"), Option("modpack", "整合包"),
             Option("shader", "光影"), Option("resourcepack", "材质") };
+        static readonly Choice[] ModCategories = {
+            Option("", "全部模组分类"), Option("optimization", "性能优化"), Option("utility", "实用工具"),
+            Option("library", "前置与支持库"), Option("adventure", "冒险"), Option("technology", "科技"),
+            Option("magic", "魔法"), Option("decoration", "装饰"), Option("worldgen", "世界生成"),
+            Option("game-mechanics", "游戏机制"), Option("equipment", "装备与工具"), Option("mobs", "生物"),
+            Option("food", "食物与烹饪"), Option("storage", "仓储"), Option("transportation", "运输"),
+            Option("management", "管理"), Option("social", "社交"), Option("economy", "经济"),
+            Option("minigame", "小游戏"), Option("cursed", "恶搞")
+        };
 
         static string ResourceType(string key) => ResourceTypes.FirstOrDefault(option => option.Key == key)?.Label ?? key;
         static IEnumerable<Choice> FilterLoaders() => new[] { Option("", "全部加载器") }
@@ -24,10 +34,12 @@ namespace EBuild.Native
 
         sealed class ResourceSearch
         {
+            static readonly Choice AnyVersion = Option("", "全部（也可输入版本号）");
             readonly Launcher host;
-            readonly TextBox query = Input("", 150);
-            readonly TextBox version;
+            readonly TextBox query = CatalogInput("输入资源名称", max: 150);
+            readonly ComboBox version;
             readonly ComboBox type;
+            readonly ComboBox category;
             readonly ComboBox loader;
             readonly ComboBox sort;
             readonly StackPanel results = Stack();
@@ -37,15 +49,29 @@ namespace EBuild.Native
             int request;
             int count;
             bool loaded;
+            bool loadingVersions;
+            string GameVersion => version.Text == AnyVersion.Label ? "" : version.Text.Trim();
 
             internal StackPanel Root { get; }
 
             internal ResourceSearch(Launcher host, string game, string selectedLoader, string selectedType) {
                 this.host = host;
-                version = Input(game, 64);
-                version.MinHeight = 34;
-                query.MinHeight = 34;
-                type = Picker(ResourceTypes, selectedType);
+                status.Margin = new Thickness(0, 1, 0, 5);
+                version = Picker(new[] { AnyVersion }, editable: true);
+                version.IsTextSearchEnabled = false;
+                version.Text = game == "" ? AnyVersion.Label : game;
+                version.DropDownOpened += async (_, __) => await LoadVersionChoices();
+                type = Picker(ResourceTypes, selectedType == "" ? "mod" : selectedType);
+                category = Picker(ModCategories);
+                var heading = Heading("", 15);
+                heading.Margin = new Thickness(0, 0, 0, 6);
+                void UpdateCategory() {
+                    string selected = Chosen(type);
+                    heading.Text = selected == "" ? "搜索资源" : "搜索" + ResourceType(selected);
+                    category.IsEnabled = selected == "mod";
+                    if (!category.IsEnabled) category.SelectedIndex = 0;
+                }
+                UpdateCategory();
                 loader = Picker(FilterLoaders(), selectedLoader);
                 sort = Picker(new[] { Option("relevance", "相关性"), Option("downloads", "下载量"),
                     Option("updated", "最近更新"), Option("newest", "最新发布") });
@@ -54,20 +80,91 @@ namespace EBuild.Native
                 more.Margin = new Thickness(0, 8, 0, 0);
                 more.Visibility = Visibility.Collapsed;
                 var search = host.Button("搜索", () => Search(false), true);
-                search.MinWidth = 76;
-                search.VerticalAlignment = VerticalAlignment.Bottom;
-                search.Margin = new Thickness(12, 0, 0, 9);
-                var searchRow = new DockPanel();
-                DockPanel.SetDock(search, Dock.Right);
-                searchRow.Children.Add(search);
-                searchRow.Children.Add(Field("搜索 Modrinth 资源", query));
-                Root = Stack(searchRow,
-                    Columns(Columns(Field("游戏版本", version), Field("资源类型", type)),
-                        Columns(Field("加载器", loader), Field("排序", sort))),
-                    DownloadListLine(status), results, more);
-                query.KeyDown += async (_, e) => { if (e.Key == Key.Enter) await host.Guard(() => Search(false)); };
-                foreach (var filter in new[] { type, loader, sort })
-                    filter.SelectionChanged += async (_, __) => await host.Guard(() => Search(false));
+                search.MinWidth = 88;
+                search.Margin = new Thickness(0, 0, 6, 0);
+                var reset = host.Button("重置条件", () => {
+                    query.Clear();
+                    version.SelectedIndex = 0;
+                    version.Text = AnyVersion.Label;
+                    category.SelectedIndex = loader.SelectedIndex = sort.SelectedIndex = 0;
+                    return Search(false);
+                });
+                reset.MinWidth = 88;
+                reset.Margin = search.Margin;
+
+                var fields = new Grid();
+                foreach (var width in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star),
+                    new GridLength(22), GridLength.Auto, new GridLength(.65, GridUnitType.Star) })
+                    fields.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
+                for (int row = 0; row < 3; row++) fields.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                AddSearchField(fields, "名称", query, 0, 0);
+                AddSearchField(fields, "资源类型", type, 0, 3);
+                AddSearchField(fields, "游戏版本", version, 1, 0);
+                AddSearchField(fields, "模组分类", category, 1, 3);
+
+                AddSearchField(fields, "加载器", loader, 2, 0);
+                AddSearchField(fields, "排序", sort, 2, 3);
+                var advanced = fields.Children.Cast<UIElement>().Where(item => Grid.GetRow(item) == 2).ToArray();
+                foreach (var item in advanced) item.Visibility = Visibility.Collapsed;
+                bool advancedOpen = false;
+                var filterButton = new Button { MinWidth = 88, Style = (Style)host.FindResource("QuietButton") };
+                filterButton.Click += (_, __) => {
+                    advancedOpen = !advancedOpen;
+                    foreach (var item in advanced) item.Visibility = advancedOpen ? Visibility.Visible : Visibility.Collapsed;
+                    UpdateFilterLabel();
+                };
+                void UpdateFilterLabel() {
+                    int count = (Chosen(loader) == "" ? 0 : 1) + (Chosen(sort) == "relevance" ? 0 : 1);
+                    filterButton.Content = advancedOpen ? "收起筛选" : count == 0 ? "更多筛选" : "更多筛选 · " + count;
+                    AutomationProperties.SetItemStatus(filterButton, advancedOpen ? "已展开" : "已折叠");
+                }
+                UpdateFilterLabel();
+                var actions = Actions(search, reset, filterButton);
+                actions.Margin = new Thickness(0, 7, 0, 0);
+                var form = Card(Stack(heading, fields, actions));
+                form.Padding = new Thickness(14, 8, 14, 8);
+                form.Margin = new Thickness(0, 0, 0, 6);
+                Root = Stack(form, status, results, more);
+
+                async void ApplyOnEnter(object sender, KeyEventArgs e) {
+                    if (e.Key != Key.Enter || (sender == version && version.IsDropDownOpen)) return;
+                    e.Handled = true;
+                    await host.Guard(() => Search(false));
+                }
+                query.KeyDown += ApplyOnEnter;
+                version.PreviewKeyDown += ApplyOnEnter;
+                type.SelectionChanged += (_, __) => UpdateCategory();
+                foreach (var filter in new[] { loader, sort })
+                    filter.SelectionChanged += (_, __) => UpdateFilterLabel();
+            }
+
+            static void AddSearchField(Grid fields, string name, Control control, int row, int column) {
+                var margin = row == 0 ? 0 : 5;
+                var label = new Label { Content = name, Target = control, Padding = new Thickness(0, 0, 10, 0),
+                    VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, margin, 0, 0) };
+                UseResource(label, Control.ForegroundProperty, "Ink");
+                AutomationProperties.SetName(control, name);
+                control.Margin = new Thickness(0, margin, 0, 0);
+                Grid.SetRow(label, row);
+                Grid.SetRow(control, row);
+                Grid.SetColumn(label, column);
+                Grid.SetColumn(control, column + 1);
+                fields.Children.Add(label);
+                fields.Children.Add(control);
+            }
+
+            async Task LoadVersionChoices() {
+                if (loadingVersions || version.Items.Count > 1) return;
+                loadingVersions = true;
+                try {
+                    var data = host.catalog ?? await host.Call("catalog", false);
+                    var selected = GameVersion;
+                    var releases = data.A("versions").Where(item => item.S("type") == "release").Select(item => item.S("id"));
+                    SetOptions(version, new[] { AnyVersion }.Concat(releases.Select(id => Option(id, id))), selected);
+                    if (selected != "" && Chosen(version) != selected) version.Text = selected;
+                } catch {
+                    version.ToolTip = "版本列表加载失败，可以直接输入版本号。";
+                } finally { loadingVersions = false; }
             }
 
             internal Task EnsureLoaded() => loaded ? Task.CompletedTask : Search(false);
@@ -75,7 +172,8 @@ namespace EBuild.Native
             internal async Task Search(bool append) {
                 int revision = ++request;
                 if (!append) {
-                    filters = J.Map("query", query.Text.Trim(), "version", version.Text.Trim(), "type", Chosen(type), "loader", Chosen(loader), "sort", Chosen(sort));
+                    filters = J.Map("query", query.Text.Trim(), "version", GameVersion, "type", Chosen(type),
+                        "category", Chosen(category), "loader", Chosen(loader), "sort", Chosen(sort));
                     results.Children.Clear();
                     count = 0;
                 }
@@ -87,41 +185,14 @@ namespace EBuild.Native
                     loaded = true;
                     var found = data.A("hits");
                     count += found.Length;
-                    status.Text = count == 0 ? "没有找到匹配资源。" : "Modrinth · " + count + " / " + data.I("total_hits") + " 个资源";
+                    status.Text = count == 0 ? "没有找到匹配资源。" : "共 " + data.I("total_hits").ToString("N0") + " 个结果";
                     int position = 0;
+                    var categoryKey = filters.S("category");
+                    var appliedCategory = categoryKey == "" ? null : ModCategories.FirstOrDefault(option => option.Key == categoryKey);
                     foreach (var project in found) {
-                        var currentFilters = filters;
-                        var result = host.QuietAction("", () => host.OpenResource(project.S("project_id"), currentFilters, Back));
-                        result.HorizontalContentAlignment = HorizontalAlignment.Stretch;
-                        result.Margin = new Thickness(0);
-                        result.Padding = new Thickness(0, 9, 8, 9);
-                        UseResource(result, Control.ForegroundProperty, "Ink");
-                        AutomationProperties.SetName(result, "查看 " + project.S("title") + " 的详情");
-                        var image = host.ProjectImage(project, 36);
-                        image.Margin = new Thickness(0, 0, 12, 0);
-                        var title = InstanceText(project.S("title"), 14, FontWeights.SemiBold);
-                        var description = InstanceText(project.S("description"), 12);
-                        UseResource(description, TextBlock.ForegroundProperty, "Muted");
-                        var info = InstanceText(ResourceType(project.S("project_type")) + " · " + DownloadCount(project), 11);
-                        UseResource(info, TextBlock.ForegroundProperty, "Muted");
-                        var preview = new DockPanel();
-                        DockPanel.SetDock(image, Dock.Left);
-                        preview.Children.Add(image);
-                        preview.Children.Add(Stack(title, description, info));
-                        result.Content = preview;
-                        result.ToolTip = project.S("description");
-                        var row = new DockPanel();
-                        var quick = host.QuietAction(project.S("project_type") == "modpack" ? "安装整合包" : "安装兼容版本",
-                            () => host.QuickInstall(project, currentFilters, Back));
-                        quick.VerticalAlignment = VerticalAlignment.Center;
-                        quick.Margin = new Thickness(8, 0, 0, 0);
-                        UseResource(quick, Control.ForegroundProperty, "AccentText");
-                        DockPanel.SetDock(quick, Dock.Right);
-                        row.Children.Add(quick);
-                        row.Children.Add(result);
-                        var line = DownloadListLine(row);
-                        results.Children.Add(line);
-                        if (position < 6) host.AnimateEntrance(line, 0, 9, position++ * 17);
+                        var row = SearchResult(project, filters, appliedCategory);
+                        results.Children.Add(row);
+                        if (position < 6) host.AnimateEntrance(row, 0, 9, position++ * 17);
                     }
                     more.Visibility = count < data.I("total_hits") && found.Length != 0 ? Visibility.Visible : Visibility.Collapsed;
                 } catch (Exception error) {
@@ -129,8 +200,69 @@ namespace EBuild.Native
                 }
             }
 
+            FrameworkElement SearchResult(object project, object currentFilters, Choice appliedCategory) {
+                var name = project.S("title");
+                var summary = project.S("description");
+                var hasSummary = !string.IsNullOrWhiteSpace(summary);
+                var projectType = project.S("project_type");
+                var tags = project.A("display_categories").Concat(project.A("categories")).Select(tag => tag.S());
+                var matched = projectType == "mod" ? appliedCategory ?? tags.Select(tag => ModCategories.FirstOrDefault(option => option.Key == tag))
+                    .FirstOrDefault(option => option != null) : null;
+
+                var title = InstanceText(name, 14, FontWeights.SemiBold);
+                var details = Stack(title);
+                if (hasSummary) {
+                    var description = InstanceText(summary, 12);
+                    description.Margin = new Thickness(0, 1, 0, 0);
+                    UseResource(description, TextBlock.ForegroundProperty, "Muted");
+                    details.Children.Add(description);
+                }
+                var categoryLabel = InstanceText(matched?.Label ?? ResourceType(projectType), 11, FontWeights.SemiBold);
+                UseResource(categoryLabel, TextBlock.ForegroundProperty, "AccentText");
+                var downloads = InstanceText(DownloadCount(project), 11);
+                downloads.Margin = new Thickness(9, 0, 0, 0);
+                UseResource(downloads, TextBlock.ForegroundProperty, "Muted");
+                var info = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
+                info.Children.Add(categoryLabel);
+                info.Children.Add(downloads);
+                details.Children.Add(info);
+                details.VerticalAlignment = VerticalAlignment.Center;
+
+                const int iconSize = 42;
+                var icon = host.ProjectImage(project, iconSize);
+                icon.Margin = new Thickness(0, 0, 11, 0);
+                icon.Clip = new RectangleGeometry(new Rect(0, 0, iconSize, iconSize), 5, 5);
+                var preview = new DockPanel();
+                DockPanel.SetDock(icon, Dock.Left);
+                preview.Children.Add(icon);
+                preview.Children.Add(details);
+
+                var result = host.QuietAction("", () => host.OpenResource(project.S("project_id"), currentFilters, Back));
+                result.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+                result.Margin = new Thickness(0);
+                result.Padding = new Thickness(10, 6, 8, 6);
+                result.Content = preview;
+                result.ToolTip = hasSummary ? name + "\n" + summary : name;
+                UseResource(result, Control.ForegroundProperty, "Ink");
+                AutomationProperties.SetName(result, "查看 " + name + " 的详情");
+
+                var quick = host.Button("安装", () => host.QuickInstall(project, currentFilters, Back));
+                var actionLabel = projectType == "modpack" ? "安装整合包" : "安装兼容版本";
+                quick.ToolTip = actionLabel;
+                quick.VerticalAlignment = VerticalAlignment.Center;
+                quick.MinWidth = 56;
+                quick.Padding = new Thickness(8, 4, 8, 4);
+                UseResource(quick, Control.ForegroundProperty, "AccentText");
+                AutomationProperties.SetName(quick, actionLabel + " · " + name);
+                var card = Card(WithActions(result, quick));
+                card.Padding = new Thickness(0, 0, 9, 0);
+                card.Margin = new Thickness(0, 0, 0, 5);
+                card.CornerRadius = new CornerRadius(7);
+                return card;
+            }
+
             Task Back() {
-                return host.ShowDownloads(1, version.Text, Chosen(loader), Chosen(type), this);
+                return host.ShowDownloads(1, GameVersion, Chosen(loader), Chosen(type), this);
             }
         }
 
@@ -148,7 +280,9 @@ namespace EBuild.Native
             count.ToString("N0") + " 次下载" : "";
 
         async Task OpenResource(string id, object filters, Func<Task> back) {
-            var page = ShowPage("resource", 1, "资源详情", back);
+            var title = new ContentControl { Content = Heading("资源详情", 19), HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Margin = new Thickness(0, 0, 0, 9) };
+            var page = ShowPage("resource", DownloadsSection, "", back, titleContent: title);
             var status = Note("正在读取资源详情…");
             page.Children.Add(status);
             int revision = pageRevision;
@@ -156,7 +290,7 @@ namespace EBuild.Native
                 var result = await Call("resources:detail", id);
                 if (pageRevision != revision) return;
                 page.Children.Remove(status);
-                RenderResource(page, result, filters, back);
+                RenderResource(page, title, result, filters, back);
             } catch (Exception error) {
                 status.Text = error.Message;
                 page.Children.Add(Actions(Button("重试", () => OpenResource(id, filters, back))));
@@ -176,22 +310,38 @@ namespace EBuild.Native
             return match.Success ? match.Value : version;
         }
 
-        void RenderResource(StackPanel page, object result, object filters, Func<Task> back) {
+        void RenderResource(StackPanel page, ContentControl titleHost, object result, object filters, Func<Task> back) {
             var project = result.At("project");
             var id = project.S("id");
             var title = project.S("title");
             var slug = project.S("slug");
             var type = project.S("project_type");
             var releases = result.A("releases");
-            var titleCard = Stack(Row(ProjectImage(project, 54), title, ResourceType(type) + " · Modrinth · " + DownloadCount(project) +
-                " · 更新于 " + DateLabel(project.S("updated"))), Note(project.S("description")));
-            var links = Actions(Button("打开 Modrinth", () => Call("resources:open-link", "https://modrinth.com/" +
-                Uri.EscapeDataString(type) + "/" + Uri.EscapeDataString(slug))),
-                Button("复制名称", () => Call("resources:copy-name", title)),
-                Button("在 MC 百科搜索", () => Call("resources:open-link", "https://search.mcmod.cn/s?key=" + Uri.EscapeDataString(title))));
-            if (result.S("wikiUrl") != "") links.Children.Add(Button("打开 MC 百科", () => Call("resources:open-link", result.S("wikiUrl"))));
-            titleCard.Children.Add(links);
-            page.Children.Add(Card(titleCard));
+            var links = CreateActionMenu();
+            AddMenu(links, "打开 Modrinth", () => Call("resources:open-link", "https://modrinth.com/" +
+                Uri.EscapeDataString(type) + "/" + Uri.EscapeDataString(slug)));
+            AddMenu(links, "复制名称", () => Call("resources:copy-name", title));
+            AddMenu(links, "在 MC 百科搜索", () => Call("resources:open-link", "https://search.mcmod.cn/s?key=" + Uri.EscapeDataString(title)));
+            if (result.S("wikiUrl") != "") AddMenu(links, "打开 MC 百科", () => Call("resources:open-link", result.S("wikiUrl")));
+            var moreActions = new Button { Content = "项目操作 ▾", ContextMenu = links, MinHeight = 30 };
+            moreActions.Click += (_, __) => {
+                links.PlacementTarget = moreActions;
+                links.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+                links.IsOpen = true;
+            };
+            var projectInfo = new DockPanel { VerticalAlignment = VerticalAlignment.Center };
+            var icon = ProjectImage(project, 31);
+            icon.Margin = new Thickness(0, 0, 9, 0);
+            DockPanel.SetDock(icon, Dock.Left);
+            projectInfo.Children.Add(icon);
+            var projectTitle = InstanceText(title, 18, FontWeights.SemiBold);
+            projectTitle.ToolTip = title;
+            var projectMeta = InstanceText(ResourceType(type) + " · " + DownloadCount(project), 11);
+            var updated = DateLabel(project.S("updated"));
+            if (updated != "") projectMeta.ToolTip = "更新于 " + updated;
+            UseResource(projectMeta, TextBlock.ForegroundProperty, "Muted");
+            projectInfo.Children.Add(Stack(projectTitle, projectMeta));
+            titleHost.Content = WithActions(projectInfo, moreActions);
 
             var tags = result.A("gameVersionTags").GroupBy(tag => tag.S("version")).ToDictionary(group => group.Key, group => group.First());
             var allGame = releases.SelectMany(release => release.A("game_versions")).Select(value => value.S()).Distinct().ToArray();
@@ -200,16 +350,27 @@ namespace EBuild.Native
             var game = filters.S("version");
             var exact = game != "";
             bool experimental = game != "" && !Stable(game);
-            var compatible = Check("仅看当前实例兼容版本");
+            var compatible = Check("仅看兼容");
+            AutomationProperties.SetName(compatible, "仅看当前实例兼容版本");
+            compatible.ToolTip = "仅看当前实例兼容版本";
+            compatible.Margin = new Thickness(9, 0, 0, 0);
             compatible.IsEnabled = Active != null && !Active.B("externalMissing");
             var loader = Picker(FilterLoaders(), filters.S("loader"));
+            AutomationProperties.SetName(loader, "加载器");
+            loader.Width = 124;
+            loader.Margin = new Thickness(8, 0, 0, 0);
             var filtersRow = new StackPanel { Orientation = Orientation.Horizontal };
-            var scroll = new ScrollViewer { Content = filtersRow, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(0, 0, 0, 8) };
+            var scroll = new ScrollViewer { Content = filtersRow, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalAlignment = VerticalAlignment.Center,
+                ToolTip = "滚动查看更多游戏版本" };
             scroll.PreviewMouseWheel += (_, e) => {
                 if (scroll.ScrollableWidth > 0) { scroll.ScrollToHorizontalOffset(scroll.HorizontalOffset - e.Delta / 2.0); e.Handled = true; }
             };
             var groups = Stack();
+            var versionGroups = Card(groups);
+            versionGroups.Padding = new Thickness(0);
+            versionGroups.Margin = new Thickness(0, 9, 0, 9);
+            var groupStyle = (Style)FindResource("ResourceVersionGroup");
             int display = 12;
             object dependencyCache = null;
             Task<object> dependencyRequest = null;
@@ -217,19 +378,28 @@ namespace EBuild.Native
             Button loadMore = null;
             loadMore = Button("显示更多版本分组", () => { display += 12; RenderGroups(false); return Task.CompletedTask; });
             Button snap = null;
-            snap = Button(experimental ? "▴" : "▾", () => {
+            snap = QuietAction(experimental ? "▴" : "▾", () => {
                 experimental = !experimental;
                 game = ""; exact = false;
+                scroll.ScrollToLeftEnd();
                 VersionButtons(); RenderGroups(true);
                 return Task.CompletedTask;
             });
+            snap.Padding = new Thickness(5, 2, 5, 2);
+            snap.Width = 28;
+            snap.MinHeight = 28;
+            snap.Margin = new Thickness(3, 0, 0, 0);
             snap.ToolTip = "快照与预发布版本";
-            System.Windows.Automation.AutomationProperties.SetName(snap, "快照与预发布版本");
+            AutomationProperties.SetName(snap, "快照与预发布版本");
             snap.Visibility = allGame.Any(version => !Stable(version)) ? Visibility.Visible : Visibility.Collapsed;
-            var strip = new DockPanel();
-            DockPanel.SetDock(snap, Dock.Right);
-            strip.Children.Add(snap);
+            var strip = new Grid { Margin = new Thickness(0, 0, 0, 5) };
+            strip.ColumnDefinitions.Add(new ColumnDefinition());
             strip.Children.Add(scroll);
+            foreach (var control in new Control[] { snap, loader, compatible }) {
+                Grid.SetColumn(control, strip.ColumnDefinitions.Count);
+                strip.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                strip.Children.Add(control);
+            }
 
             async Task<object> Dependencies() {
                 if (dependencyCache != null) return dependencyCache;
@@ -239,14 +409,28 @@ namespace EBuild.Native
             }
 
             void VersionButtons() {
+                bool restoreFocus = filtersRow.IsKeyboardFocusWithin;
                 filtersRow.Children.Clear();
                 snap.Content = experimental ? "▴" : "▾";
+                AutomationProperties.SetItemStatus(snap, experimental ? "正在查看快照" : "正在查看正式版");
+                Button current = null;
                 void Add(string value, bool precise, string label) {
-                    filtersRow.Children.Add(Button(label, () => {
+                    var chip = QuietAction(label, () => {
                         game = value; exact = precise;
                         RenderGroups(true); VersionButtons();
                         return Task.CompletedTask;
-                    }, game == value && exact == precise));
+                    });
+                    chip.MinHeight = 28;
+                    chip.Padding = new Thickness(8, 3, 8, 3);
+                    chip.Margin = new Thickness(0, 0, 2, 0);
+                    if (game == value && exact == precise) {
+                        current = chip;
+                        UseResource(chip, Control.BackgroundProperty, "Hover");
+                        UseResource(chip, Control.ForegroundProperty, "AccentText");
+                        chip.FontWeight = FontWeights.SemiBold;
+                        AutomationProperties.SetItemStatus(chip, "已选中");
+                    }
+                    filtersRow.Children.Add(chip);
                 }
                 Add("", false, experimental ? "全部快照" : "全部");
                 if (game != "" && exact && !experimental) Add(game, true, game + "（精确）");
@@ -254,6 +438,7 @@ namespace EBuild.Native
                     .OrderByDescending(v => tags.TryGetValue(v, out object tag) ? tag.S("date") : "").ThenByDescending(v => ParseVersion(v)).ToArray();
                 foreach (string item in (experimental ? versions : versions.Select(VersionSeries).Distinct().ToArray()))
                     Add(item, experimental, item);
+                if (restoreFocus) current?.Focus();
             }
 
             void RenderGroups(bool reset) {
@@ -280,14 +465,20 @@ namespace EBuild.Native
                         }
                     }
                 }
-                if (byVersion.Count == 0) groups.Children.Add(Note("没有匹配的版本。"));
+                if (byVersion.Count == 0) {
+                    var empty = Note("没有匹配的版本。");
+                    empty.Margin = new Thickness(15, 12, 15, 12);
+                    groups.Children.Add(empty);
+                }
                 bool first = true;
                 foreach (var group in byVersion.OrderByDescending(g => tags.TryGetValue(g.Key.Item1, out object tag) ? tag.S("date") : "")
                     .ThenByDescending(g => ParseVersion(g.Key.Item1)).ThenBy(g => g.Key.Item2).Take(display)) {
                     var version = group.Key.Item1;
                     var variant = group.Key.Item2;
-                    var expander = new Expander { Header = (variant == "" ? "Minecraft" : Loader(variant)) + " " + version +
-                        " · " + group.Value.Count + " 个版本", Margin = new Thickness(0, 4, 0, 4), Padding = new Thickness(4) };
+                    var groupName = (variant == "" ? "Minecraft" : Loader(variant)) + " " + version;
+                    var countLabel = group.Value.Count + " 个版本";
+                    var expander = new Expander { Style = groupStyle, Header = groupName, Tag = countLabel };
+                    AutomationProperties.SetName(expander, groupName + "，" + countLabel);
                     bool built = false;
                     expander.Expanded += (_, __) => {
                         if (built) return;
@@ -296,13 +487,13 @@ namespace EBuild.Native
                         foreach (var release in group.Value.OrderByDescending(value => value.S("date_published"))) {
                             bool installable = type != "modpack" || release.A("loaders").Any(value =>
                                 value.S() == "minecraft" || Minecraft.SupportsLoader(value.S()));
-                            var action = Button("安装", () => InstallResource(project, release, version, variant, ""));
+                            var action = QuietAction("安装", () => InstallResource(project, release, version, variant, ""));
                             action.IsEnabled = installable;
-                            var label = release.S("version_type") == "beta" ? "测试版" : release.S("version_type") == "alpha" ? "预览版" : "正式版";
-                            rows.Children.Add(Row(AssetIcon("resource-file", 23), release.S("name"),
-                                release.S("version_number") + " · " + label + " · " + DownloadCount(release) + " · " + DateLabel(release.S("date_published")), action));
+                            rows.Children.Add(ResourceVersionRow(release, version, action));
                             if (release.A("dependencies").Length != 0) {
-                                var required = new Expander { Header = "必需依赖 · " + release.A("dependencies").Length };
+                                var required = new Expander { Header = "必需依赖 · " + release.A("dependencies").Length,
+                                    Margin = new Thickness(0, 4, 0, 8) };
+                                UseResource(required, Control.ForegroundProperty, "Ink");
                                 required.Expanded += async (sender, e) => {
                                     if (e.Source != required || required.Content != null) return;
                                     required.Content = Note("正在读取依赖…");
@@ -329,7 +520,9 @@ namespace EBuild.Native
                         }
                         expander.Content = rows;
                     };
-                    groups.Children.Add(Card(expander));
+                    var section = new Border { Child = expander, BorderThickness = new Thickness(0, first ? 0 : 1, 0, 0) };
+                    UseResource(section, Border.BorderBrushProperty, "Line");
+                    groups.Children.Add(section);
                     expander.IsExpanded = first;
                     first = false;
                 }
@@ -341,12 +534,64 @@ namespace EBuild.Native
             loader.SelectionChanged += (_, __) => RenderGroups(true);
             VersionButtons();
             RenderGroups(true);
-            var versionTab = Stack(Card(Stack(strip, Columns(Field("加载器", loader), Actions(compatible)))), groups, loadMore);
+            var versionTab = Stack(strip, versionGroups, loadMore);
+            TextElement.SetFontWeight(versionTab, FontWeights.Normal);
             var description = WebUtility.HtmlDecode(result.S("description").Replace("</p>", "\n\n").Replace("<p>", "").Replace("<br>", "\n")).Trim();
-            var tabs = new TabControl();
+            var tabs = new TabControl { Style = (Style)FindResource("DownloadTabs") };
             tabs.Items.Add(Tab("版本列表", versionTab));
-            tabs.Items.Add(Tab("项目介绍", Card(Stack(Text(description == "" ? project.S("description") : description)))));
+            var about = Card(Stack(Text(description == "" ? project.S("description") : description)));
+            TextElement.SetFontWeight(about, FontWeights.Normal);
+            tabs.Items.Add(Tab("项目介绍", about));
             page.Children.Add(tabs);
+        }
+
+        static FrameworkElement ResourceVersionRow(object release, string game, Button install) {
+            var originalName = release.S("name");
+            var prefix = "[" + game + "] ";
+            var number = release.S("version_number");
+            var name = originalName.StartsWith(prefix, StringComparison.Ordinal) ? originalName.Substring(prefix.Length) : originalName;
+            if (name == "") name = number;
+            var date = DateLabel(release.S("date_published"));
+            var versionType = release.S("version_type");
+            (string Letter, string Label, string Fill, string Ink) channel;
+            switch (versionType) {
+                case "release": channel = ("R", "正式版", "Hover", "AccentText"); break;
+                case "beta": channel = ("B", "测试版", "BetaFill", "BetaText"); break;
+                case "alpha": channel = ("A", "预览版", "AlphaFill", "AlphaText"); break;
+                default: channel = ("?", "未标注发布类型", "Canvas", "Muted"); break;
+            }
+            var tag = versionType == "beta" || versionType == "alpha" ? channel.Label : "";
+            var summary = String.Join(" · ", new[] { tag, date }.Where(value => value != ""));
+            var note = String.Join(" · ", new[] { number, channel.Label, DownloadCount(release), date }.Where(value => value != ""));
+            var letter = new TextBlock { Text = channel.Letter, FontSize = 11, FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
+            AutomationProperties.SetName(letter, channel.Label);
+            UseResource(letter, TextBlock.ForegroundProperty, channel.Ink);
+            var icon = new Border { Child = letter, Width = 20, Height = 20, CornerRadius = new CornerRadius(5),
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 9, 0), ToolTip = channel.Label };
+            UseResource(icon, Border.BackgroundProperty, channel.Fill);
+            var title = InstanceText(name, 14);
+            title.VerticalAlignment = VerticalAlignment.Center;
+            title.Margin = new Thickness(0, 0, 8, 0);
+            var metadata = InstanceText(summary, 12);
+            metadata.VerticalAlignment = VerticalAlignment.Center;
+            metadata.TextAlignment = TextAlignment.Right;
+            UseResource(metadata, TextBlock.ForegroundProperty, "Muted");
+            var details = new DockPanel();
+            DockPanel.SetDock(icon, Dock.Left);
+            DockPanel.SetDock(metadata, Dock.Right);
+            details.Children.Add(icon);
+            details.Children.Add(metadata);
+            details.Children.Add(title);
+            install.MinHeight = 30;
+            install.MinWidth = 54;
+            install.Padding = new Thickness(8, 4, 8, 4);
+            UseResource(install, Control.ForegroundProperty, "AccentText");
+            AutomationProperties.SetName(install, "安装 " + originalName);
+            var row = WithActions(details, install);
+            row.MinHeight = 38;
+            row.ToolTip = (originalName == "" ? name : originalName) + "\n" + note;
+            return DownloadListLine(row);
         }
 
         static Version ParseVersion(string value) => Version.TryParse(value, out var version) ? version : new Version();

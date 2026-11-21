@@ -60,13 +60,17 @@ namespace EBuild.Native
         internal static BitmapSource Avatar(BitmapSource skin) {
             skin = ValidSkin(skin);
             const int faceSize = 8;
-            var bounds = new Rect(0, 0, faceSize, faceSize);
+            const int avatarSize = 24;
+            const int faceInset = 2;
+            var faceBounds = new Rect(faceInset, faceInset, avatarSize - faceInset * 2, avatarSize - faceInset * 2);
+            var outerBounds = new Rect(0, 0, avatarSize, avatarSize);
             var drawing = new DrawingVisual();
+            RenderOptions.SetBitmapScalingMode(drawing, BitmapScalingMode.NearestNeighbor);
             using (var layer = drawing.RenderOpen()) {
-                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(8, 8, faceSize, faceSize)), bounds);
-                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(40, 8, faceSize, faceSize)), bounds);
+                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(8, 8, faceSize, faceSize)), faceBounds);
+                layer.DrawImage(new CroppedBitmap(skin, new Int32Rect(40, 8, faceSize, faceSize)), outerBounds);
             }
-            var image = new RenderTargetBitmap(faceSize, faceSize, 96, 96, PixelFormats.Pbgra32);
+            var image = new RenderTargetBitmap(avatarSize, avatarSize, 96, 96, PixelFormats.Pbgra32);
             image.Render(drawing);
             image.Freeze();
             return image;
@@ -79,25 +83,48 @@ namespace EBuild.Native
             skin = ValidSkin(skin);
             bool legacy = skin.PixelHeight == 32;
             int arm = slim && !legacy ? 3 : 4;
-            skin = ScaleTexture(skin);
+            var skinPixels = ReadPixels(skin);
+            void Opaque(int x, int y, int width, int height) {
+                for (int row = y; row < y + height; row++)
+                    for (int column = x; column < x + width; column++)
+                        skinPixels[row * 64 + column] |= unchecked((int)0xff000000);
+            }
+            // Only the base head, torso and limb regions are opaque. Keep clothing and hair transparency.
+            Opaque(0, 0, 32, 16);
+            Opaque(0, 16, 64, 16);
+            if (!legacy) Opaque(16, 48, 32, 16);
+            skin = ScaleTexture(skin, skinPixels);
             body.Children.Clear();
-            Part(skin, -4, 8, -4, 8, 8, 8, 0, 0, 32, 0, false, true);
-            Part(skin, -4, -4, -2, 8, 12, 4, 16, 16, 16, 32, false, !legacy);
-            Part(skin, -4 - arm, -4, -2, arm, 12, 4, 40, 16, 40, 32, false, !legacy);
-            Part(skin, 4, -4, -2, arm, 12, 4, legacy ? 40 : 32, legacy ? 16 : 48, 48, 48, legacy, !legacy);
-            Part(skin, -4, -16, -2, 4, 12, 4, 0, 16, 0, 32, false, !legacy);
-            Part(skin, 0, -16, -2, 4, 12, 4, legacy ? 0 : 16, legacy ? 16 : 48, 0, 48, legacy, !legacy);
+            var overlays = new Model3DCollection();
+            void Part(double x, double y, double z, int w, int h, int d, int u, int v,
+                int outerU, int outerV, bool mirror, bool overlay) {
+                Box(body.Children, skin, x, y, z, w, h, d, u, v, mirror, 0, false);
+                if (overlay) Box(overlays, skin, x, y, z, w, h, d, outerU, outerV, false, .22, false, skinPixels);
+            }
+            Part(-4, 8, -4, 8, 8, 8, 0, 0, 32, 0, false, true);
+            Part(-4, -4, -2, 8, 12, 4, 16, 16, 16, 32, false, !legacy);
+            Part(-4 - arm, -4, -2, arm, 12, 4, 40, 16, 40, 32, false, !legacy);
+            Part(4, -4, -2, arm, 12, 4, legacy ? 40 : 32, legacy ? 16 : 48, 48, 48, legacy, !legacy);
+            Part(-4, -16, -2, 4, 12, 4, 0, 16, 0, 32, false, !legacy);
+            Part(0, -16, -2, 4, 12, 4, legacy ? 0 : 16, legacy ? 16 : 48, 0, 48, legacy, !legacy);
             if (cape != null && cape.PixelWidth >= 64 && cape.PixelWidth <= 512 && cape.PixelWidth % 64 == 0 && cape.PixelHeight == cape.PixelWidth / 2)
-                Box(ScaleTexture(cape), -5, -8.5, -3.15, 10, 16, 1, 0, 0, false, 0, true);
+                Box(body.Children, ScaleTexture(cape), -5, -8.5, -3.15, 10, 16, 1, 0, 0, false, 0, true);
+            // Draw all base parts before any translucent skin faces.
+            foreach (var overlay in overlays) body.Children.Add(overlay);
         }
 
-        static BitmapSource ScaleTexture(BitmapSource source) {
+        static int[] ReadPixels(BitmapSource source) {
+            var image = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+            var pixels = new int[image.PixelWidth * image.PixelHeight];
+            image.CopyPixels(pixels, image.PixelWidth * 4, 0);
+            return pixels;
+        }
+
+        static BitmapSource ScaleTexture(BitmapSource source, int[] pixels = null) {
             int factor = PreviewPixelsPerTexel * 64 / source.PixelWidth;
             if (factor <= 1) return source;
-            var image = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
-            int width = image.PixelWidth, height = image.PixelHeight;
-            var input = new int[width * height];
-            image.CopyPixels(input, width * 4, 0);
+            int width = source.PixelWidth, height = source.PixelHeight;
+            var input = pixels ?? ReadPixels(source);
             int outputWidth = width * factor;
             var output = new int[outputWidth * height * factor];
             for (int y = 0; y < height * factor; y++)
@@ -108,13 +135,8 @@ namespace EBuild.Native
             return scaled;
         }
 
-        void Part(BitmapSource texture, double x, double y, double z, int w, int h, int d, int u, int v,
-            int outerU, int outerV, bool mirror, bool overlay) {
-            Box(texture, x, y, z, w, h, d, u, v, mirror, 0, false);
-            if (overlay) Box(texture, x, y, z, w, h, d, outerU, outerV, false, .22, false);
-        }
-
-        void Box(BitmapSource texture, double x, double y, double z, int w, int h, int d, int u, int v, bool mirror, double pad, bool cape) {
+        static void Box(Model3DCollection meshes, BitmapSource texture, double x, double y, double z,
+            int w, int h, int d, int u, int v, bool mirror, double pad, bool cape, int[] overlayPixels = null) {
             double right = x + w + pad, top = y + h + pad, front = z + d + pad;
             x -= pad; y -= pad; z -= pad;
             var f = new Point3D(x, top, front); var fr = new Point3D(right, top, front);
@@ -122,15 +144,24 @@ namespace EBuild.Native
             var lf = new Point3D(x, y, front); var rf = new Point3D(right, y, front);
             var rb = new Point3D(right, y, z); var lb = new Point3D(x, y, z);
             int frontU = u + d, backU = u + 2 * d + w;
-            Face(texture, cape ? backU : frontU, v + d, w, h, f, fr, lf, rf, mirror);
-            Face(texture, cape ? frontU : backU, v + d, w, h, b, bl, rb, lb, mirror);
-            Face(texture, mirror ? u + d + w : u, v + d, d, h, bl, f, lb, lf, mirror);
-            Face(texture, mirror ? u : u + d + w, v + d, d, h, fr, b, rf, rb, mirror);
-            Face(texture, u + d, v, w, d, bl, b, f, fr, mirror);
-            Face(texture, u + d + w, v, w, d, lf, rf, lb, rb, mirror);
+            Face(meshes, texture, cape ? backU : frontU, v + d, w, h, f, fr, lf, rf, mirror, overlayPixels);
+            Face(meshes, texture, cape ? frontU : backU, v + d, w, h, b, bl, rb, lb, mirror, overlayPixels);
+            Face(meshes, texture, mirror ? u + d + w : u, v + d, d, h, bl, f, lb, lf, mirror, overlayPixels);
+            Face(meshes, texture, mirror ? u : u + d + w, v + d, d, h, fr, b, rf, rb, mirror, overlayPixels);
+            Face(meshes, texture, u + d, v, w, d, bl, b, f, fr, mirror, overlayPixels);
+            Face(meshes, texture, u + d + w, v, w, d, lf, rf, lb, rb, mirror, overlayPixels);
         }
 
-        void Face(BitmapSource texture, int x, int y, int w, int h, Point3D a, Point3D b, Point3D c, Point3D d, bool mirror) {
+        static bool HasVisiblePixels(int[] pixels, int x, int y, int width, int height) {
+            for (int row = y; row < y + height; row++)
+                for (int column = x; column < x + width; column++)
+                    if ((pixels[row * 64 + column] & unchecked((int)0xff000000)) != 0) return true;
+            return false;
+        }
+
+        static void Face(Model3DCollection meshes, BitmapSource texture, int x, int y, int w, int h,
+            Point3D a, Point3D b, Point3D c, Point3D d, bool mirror, int[] overlayPixels) {
+            if (overlayPixels != null && !HasVisiblePixels(overlayPixels, x, y, w, h)) return;
             int scale = texture.PixelWidth / 64;
             var region = new Int32Rect(x * scale, y * scale, w * scale, h * scale);
             var crop = new CroppedBitmap(texture, region);
@@ -142,7 +173,7 @@ namespace EBuild.Native
                 TextureCoordinates = new PointCollection { new Point(mirror ? 1 : 0, 0), new Point(mirror ? 0 : 1, 0),
                     new Point(mirror ? 1 : 0, 1), new Point(mirror ? 0 : 1, 1) }
             };
-            body.Children.Add(new GeometryModel3D(mesh, new DiffuseMaterial(brush)));
+            meshes.Add(new GeometryModel3D(mesh, new DiffuseMaterial(brush)));
         }
 
         static BitmapSource BuildDefaultSkin() {

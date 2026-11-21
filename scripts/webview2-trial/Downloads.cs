@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -8,6 +9,12 @@ using System.Threading.Tasks;
 sealed partial class Backend
 {
     string runningDownload;
+    Network downloadNetwork;
+
+    internal object DownloadTransferStatus(string id) {
+        var network = downloadNetwork;
+        return runningDownload == id && network != null ? network.TransferStatus() : null;
+    }
 
     static string DownloadId(string id) {
         Guid value;
@@ -41,7 +48,7 @@ sealed partial class Backend
         if (state == "active" && runningDownload != record.S("id")) state = "paused";
         return J.Map("id", record.S("id"), "kind", record.S("kind"), "input", record.At("input"),
             "state", state, "instance", finished, "message", state == "paused" ? "下载已保留，点击继续安装。" : record.S("message"),
-            "created", record.S("created"));
+            "created", record.S("created"), "transfer", record.At("transfer"));
     }
     object[] DownloadList() {
         var dir = J.Inside(Root, "downloads");
@@ -127,11 +134,21 @@ sealed partial class Backend
         var existing = FinishedDownload(record);
         if (existing != null) return existing;
         if (record.S("state") == "complete") throw new IOException("此任务已完成，但实例已被移除。请重新新建实例。");
-        runningDownload = id;
+        var elapsed = Stopwatch.StartNew();
+        var previousTransfer = record.At("transfer");
+        Func<object> report = () => {
+            var current = net.TransferStatus();
+            return J.Map("switch", current.S("switch") == "" ? previousTransfer.S("switch") : current.S("switch"),
+                "networkMs", Convert.ToInt64(current.At("networkMs")) + Convert.ToInt64(previousTransfer.At("networkMs")),
+                "activeMs", elapsed.ElapsedMilliseconds + Convert.ToInt64(previousTransfer.At("activeMs")),
+                "bytes", Convert.ToInt64(current.At("bytes")) + Convert.ToInt64(previousTransfer.At("bytes")));
+        };
         record = J.Merge(record, J.Map("state", "active", "message", "正在准备安装…"));
         SaveDownload(record);
-        notify(J.Map("downloadsChanged", true));
+        runningDownload = id;
+        downloadNetwork = net;
         try {
+            notify(J.Map("downloadsChanged", true));
             object result;
             if (record.S("kind") == "pack") {
                 var archive = J.Inside(DownloadDirectory(id), "pack.mrpack");
@@ -163,16 +180,18 @@ sealed partial class Backend
                         LanFileSources(record.At("input")), progress, ct),
                     downloadId: id);
             } else result = await Add(record.At("input"), net, progress, ct, downloadId: id);
-            SaveDownload(J.Merge(record, J.Map("state", "complete", "message", "安装完成")));
+            SaveDownload(J.Merge(record, J.Map("state", "complete", "message", "安装完成", "transfer", report())));
             // Completed packs no longer need their private source copy. Keep only the task record.
             var packed = J.Inside(DownloadDirectory(id), "pack.mrpack");
             try { J.NoLinks(packed); File.Delete(packed); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             return result;
         } catch (Exception error) {
-            SaveDownload(J.Merge(record, J.Map("state", ct.IsCancellationRequested ? "paused" : "failed", "message", error.Message)));
+            SaveDownload(J.Merge(record, J.Map("state", ct.IsCancellationRequested ? "paused" : "failed",
+                "message", error.Message, "transfer", report())));
             throw;
         } finally {
             runningDownload = null;
+            downloadNetwork = null;
             notify(J.Map("downloadsChanged", true));
         }
     }

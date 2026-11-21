@@ -17,6 +17,7 @@ static class Program
             ImportData.Run(Path.Combine(scratch, "import"));
             CheckExternalInstances(Path.Combine(scratch, "external"));
             StorageRecovery.Run(Path.Combine(scratch, "storage-recovery"));
+            OfficialAppearance.Run(Path.Combine(scratch, "official-appearance")).GetAwaiter().GetResult();
             return 0;
         }
         catch (Exception error)

@@ -56,8 +56,8 @@ namespace EBuild.Native
             };
             automatic.Checked += save;
             automatic.Unchecked += save;
-            return Stack(Heading("启动器更新"), Note("当前版本 " + LauncherUpdate.CurrentTag), automatic,
-                Actions(Button("检查更新", () => CheckUpdate(true))));
+            var version = Stack(Heading("启动器更新", 15), Note("当前版本 " + LauncherUpdate.CurrentTag));
+            return Stack(WithActions(version, Button("检查更新", () => CheckUpdate(true))), automatic);
         }
 
         async Task CheckUpdate(bool manual) {

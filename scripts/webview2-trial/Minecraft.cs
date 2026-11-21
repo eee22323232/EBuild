@@ -19,6 +19,7 @@ sealed class Minecraft
     const string Quilt = "https://meta.quiltmc.org/v3/versions/loader/";
     const string Forge = "https://maven.minecraftforge.net/net/minecraftforge/forge/";
     const string ForgeVersions = "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json";
+    static readonly TimeSpan LoaderListFreshness = TimeSpan.FromMinutes(10);
     internal static bool SupportsLoader(string loader) { return new[] { "vanilla", "fabric", "neoforge", "forge", "quilt" }.Contains(loader); }
 
     internal static bool SupportsForge(string version) {
@@ -33,11 +34,18 @@ sealed class Minecraft
     internal string Libraries { get { return Path.Combine(Game, "libraries"); } }
     internal string Assets { get { return Path.Combine(Game, "assets"); } }
     internal Minecraft(string root, object settings) { Root = root; Settings = settings; }
-    string MirrorFor(string url) {
+    internal string MirrorFor(string url) {
         if (Settings.S("downloadSource") != "bmclapi") return "";
         var uri = Network.Https(url);
         if (uri.Host == "resources.download.minecraft.net") return Mirror + "/assets" + uri.AbsolutePath;
         if (uri.Host == "libraries.minecraft.net") return Mirror + "/maven" + uri.AbsolutePath;
+        if (uri.Host == "meta.fabricmc.net") return Mirror + "/fabric-meta" + uri.AbsolutePath;
+        if (uri.Host == "maven.fabricmc.net" || uri.Host == "maven.minecraftforge.net")
+            return Mirror + "/maven" + uri.AbsolutePath;
+        if (uri.Host == "files.minecraftforge.net" && uri.AbsolutePath.StartsWith("/maven/", StringComparison.Ordinal))
+            return Mirror + uri.AbsolutePath;
+        if (uri.Host == "maven.neoforged.net" && uri.AbsolutePath.StartsWith("/releases/net/neoforged/", StringComparison.Ordinal))
+            return Mirror + "/maven" + uri.AbsolutePath.Substring("/releases".Length);
         if (new[] { "piston-meta.mojang.com", "piston-data.mojang.com", "launcher.mojang.com", "launchermeta.mojang.com" }.Contains(uri.Host))
             return Mirror + uri.AbsolutePath;
         return "";
@@ -56,12 +64,16 @@ sealed class Minecraft
             DateTime.UtcNow - File.GetLastWriteTimeUtc(cache) < TimeSpan.FromMinutes(10)) return cached;
         foreach (var endpoint in endpoints) {
             try {
-                var catalog = ParseCatalog(await net.Json(endpoint, ct).ConfigureAwait(false));
+                var catalog = ParseCatalog(await net.Json(endpoint, ct, endpoint == Official ? 60 : 8).ConfigureAwait(false));
                 var source = endpoint == Official ? "mojang" : "bmclapi";
                 var result = J.Merge(catalog, J.Map("source", source, "preferredSource", preferred));
                 J.Save(cache, result);
                 return result;
-            } catch (Exception) { if (ct.IsCancellationRequested || (endpoint == Official && cached == null)) throw; }
+            } catch (Exception error) {
+                if (ct.IsCancellationRequested || (endpoint == Official && cached == null)) throw;
+                if (endpoint != Official)
+                    net.SourceChanged(endpoint, Official, error is OperationCanceledException ? "版本清单请求超时" : "镜像的版本清单获取失败");
+            }
         }
         return cached;
     }
@@ -76,9 +88,13 @@ sealed class Minecraft
     }
 
     static IEnumerable<string> LatestLoaders(IEnumerable<string> ids) {
-        return ids.Where(id => Regex.IsMatch(id, @"^[0-9][a-zA-Z0-9_.+\-]{0,79}$"))
+        return ids.Where(ValidLoaderVersion)
             .Distinct(StringComparer.Ordinal).OrderByDescending(NumericLoaderVersion)
             .ThenByDescending(id => !id.Contains("-")).ThenByDescending(id => id.Split('.').Last().I(null));
+    }
+
+    internal static bool ValidLoaderVersion(string id) {
+        return !id.EndsWith(".", StringComparison.Ordinal) && Regex.IsMatch(id, @"\A[0-9][a-zA-Z0-9_.+\-]{0,79}\z");
     }
 
     static Dictionary<string,object> LoaderOption(string id) { return J.Map("id", id, "stable", !id.Contains("-")); }
@@ -97,28 +113,137 @@ sealed class Minecraft
             profiles[index].Item2.S("mainClass") != "").Select(LoaderOption).ToArray();
     }
 
-    internal async Task<object> Loaders(Network net, string version, string loader, CancellationToken ct) {
+    internal async Task<object> Loaders(Network net, string version, string loader, CancellationToken ct, bool refresh = false) {
         J.Id(version);
-        if (loader == "quilt") return await QuiltLoaders(net, version, ct);
+        if (!SupportsLoader(loader) || loader == "vanilla" || (loader == "forge" && !SupportsForge(version)))
+            return new object[0];
+        string neoPrefix = loader == "neoforge" ? NeoLoaderPrefix(version) : "";
+        if (loader == "neoforge" && neoPrefix == "") return new object[0];
+        ct.ThrowIfCancellationRequested();
+        bool preferMirror = Settings.S("downloadSource") == "bmclapi";
+        var cache = J.Inside(Root, "cache/loader-lists/" + (preferMirror ? "bmclapi" : "official") + "/" + loader + "/" + version + ".json");
+        DateTime updated;
+        var cached = ReadLoaderList(cache, out updated);
+        if (!refresh && cached != null && DateTime.UtcNow - updated < LoaderListFreshness) return cached;
+
+        using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct)) {
+            deadline.CancelAfter(TimeSpan.FromSeconds(12));
+            try {
+                var results = preferMirror ? await MirrorLoaders(net, version, loader, neoPrefix, deadline.Token).ConfigureAwait(false) : null;
+                if (results == null || results.Length == 0)
+                    results = await OfficialLoaders(net, version, loader, neoPrefix, deadline.Token).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                SaveLoaderList(cache, results);
+                return results;
+            } catch (Exception error) {
+                ct.ThrowIfCancellationRequested();
+                if (!LoaderListFailure(error)) throw;
+                if (cached != null) return cached;
+                if (error is OperationCanceledException) throw new IOException("加载器版本列表请求超时，请点击「重新加载」重试。", error);
+                throw;
+            }
+        }
+    }
+
+    static bool LoaderListFailure(Exception error) {
+        return error is IOException || error is HttpRequestException || error is OperationCanceledException ||
+            error is ArgumentException || error is InvalidOperationException;
+    }
+
+    static object[] ReadLoaderList(string path, out DateTime updated) {
+        updated = DateTime.MinValue;
+        try {
+            J.NoLinks(path);
+            var file = new FileInfo(path);
+            if (!file.Exists || file.Length > 512 * 1024) return null;
+            var items = J.Read(path).A();
+            if (items.Length == 0 || items.Any(item => !ValidLoaderVersion(item.S("id")))) return null;
+            updated = file.LastWriteTimeUtc;
+            return items;
+        } catch (Exception error) {
+            if (!LoaderListFailure(error) && !(error is UnauthorizedAccessException)) throw;
+            return null;
+        }
+    }
+
+    static void SaveLoaderList(string path, object[] entries) {
+        if (entries.Length == 0) return;
+        try { J.NoLinks(path); J.Save(path, entries); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    async Task<object[]> MirrorLoaders(Network net, string version, string loader, string neoPrefix, CancellationToken ct) {
+        const int timeout = 4;
+        try {
+            switch (loader) {
+                case "fabric":
+                    return FabricLoaderOptions(await net.Json(MirrorFor(Fabric + version), ct, timeout).ConfigureAwait(false));
+                case "forge":
+                    var source = await net.Json(Mirror + "/forge/minecraft/" + version, ct, timeout).ConfigureAwait(false);
+                    return LatestLoaders(source.A().Where(item => item.S("mcversion") == version).Select(item => item.S("version")))
+                        .Select(LoaderOption).ToArray();
+                case "neoforge":
+                    var builds = await net.Json(Mirror + "/neoforge/list/" + version, ct, timeout).ConfigureAwait(false);
+                    return LatestLoaders(builds.A().Where(item => item.S("mcversion") == version)
+                        .Select(item => item.S("version")).Where(id => id.StartsWith(neoPrefix, StringComparison.Ordinal)))
+                        .Select(LoaderOption).ToArray();
+                default: return null;
+            }
+        } catch (Exception error) {
+            ct.ThrowIfCancellationRequested();
+            if (!LoaderListFailure(error)) throw;
+            return null;
+        }
+    }
+
+    static async Task<object[]> OfficialLoaders(Network net, string version, string loader, string neoPrefix, CancellationToken ct) {
+        if (loader == "quilt") return (await QuiltLoaders(net, version, ct).ConfigureAwait(false)).A();
         if (loader == "forge") {
-            if (!SupportsForge(version)) return new object[0];
             var forgePrefix = version + "-";
-            var source = await net.Json(ForgeVersions, ct);
+            var source = await net.Json(ForgeVersions, ct).ConfigureAwait(false);
             var versions = source.A(version).Select(value => value.S()).Where(id => id.StartsWith(forgePrefix, StringComparison.Ordinal));
             return LatestLoaders(versions.Select(id => id.Substring(forgePrefix.Length))).Select(LoaderOption).ToArray();
         }
-        if (loader == "fabric") return (await net.Json(Fabric + version, ct)).A().Select(x => {
-            var spec = x.At("loader"); return J.Map("id", spec.S("version"), "stable", spec.B("stable"));
-        }).ToArray();
+        if (loader == "fabric") return FabricLoaderOptions(await net.Json(Fabric + version, ct).ConfigureAwait(false));
+        var xml = await net.Text(Neo + "maven-metadata.xml", ct).ConfigureAwait(false);
+        return NeoLoaderOptions(xml, neoPrefix);
+    }
+
+    static object[] FabricLoaderOptions(object source) {
+        return source.A().Select(item => item.At("loader")).Where(spec => ValidLoaderVersion(spec.S("version")))
+            .Select(spec => J.Map("id", spec.S("version"), "stable", spec.B("stable"))).ToArray();
+    }
+
+    static string NeoLoaderPrefix(string version) {
         var match = Regex.Match(version, @"^(\d+)\.(\d+)(?:\.(\d+))?$");
-        if (loader != "neoforge" || !match.Success) return new object[0];
+        if (!match.Success) return "";
+        Version numeric;
+        if (Version.TryParse(version, out numeric) && numeric.Major == 1 && numeric < new Version(1, 20, 2)) return "";
         var parts = match.Groups;
-        var prefix = (parts[1].Value == "1" ? parts[2].Value + "." + (parts[3].Success ? parts[3].Value : "0") :
+        return (parts[1].Value == "1" ? parts[2].Value + "." + (parts[3].Success ? parts[3].Value : "0") :
             parts[1].Value + "." + parts[2].Value + "." + (parts[3].Success ? parts[3].Value : "0")) + ".";
-        var xml = await net.Text(Neo + "maven-metadata.xml", ct);
+    }
+
+    static object[] NeoLoaderOptions(string xml, string prefix) {
         return Regex.Matches(xml, @"<version>([a-z0-9.-]+)</version>", RegexOptions.IgnoreCase).Cast<Match>().Reverse()
             .Select(m => m.Groups[1].Value).Where(x => x.StartsWith(prefix, StringComparison.Ordinal))
-            .Select(x => J.Map("id", x, "stable", !x.Contains("-"))).ToArray();
+            .Select(LoaderOption).ToArray();
+    }
+    async Task<object> LoaderProfile(Network net, string url, string version, CancellationToken ct) {
+        var mirror = MirrorFor(url);
+        if (mirror != "") {
+            try {
+                var profile = await net.Json(mirror, ct, 4).ConfigureAwait(false);
+                if (profile.S("inheritsFrom") == version && profile.S("mainClass") != "") return profile;
+                net.SourceChanged(mirror, url, "镜像的加载器启动清单无效");
+            } catch (Exception error) {
+                ct.ThrowIfCancellationRequested();
+                if (!LoaderListFailure(error)) throw;
+                net.SourceChanged(mirror, url, error is OperationCanceledException ? "加载器启动清单请求超时" : "镜像的加载器启动清单获取失败");
+            }
+        }
+        return await net.Json(url, ct).ConfigureAwait(false);
     }
     internal static string Quote(string value) {
         return "\"" + Regex.Replace(value, @"(\\*)(""|$)", m => m.Groups[1].Value + m.Groups[1].Value + (m.Groups[2].Value.Length != 0 ? "\\\"" : "")) + "\"";
@@ -299,7 +424,7 @@ sealed class Minecraft
         var unique = jobs.GroupBy(x => x.Target, StringComparer.OrdinalIgnoreCase).Select(x => x.First()).ToArray();
         int finished = 0;
         progress("download", "正在校验或下载游戏文件", 0, unique.Length);
-        await Network.Pool(unique, effective.I("concurrency", 12), async job => {
+        await net.Pool(unique.OrderByDescending(job => job.Spec.I("size")), async job => {
             await Fetch(net, job.Spec, job.Target, ct, checks).ConfigureAwait(false);
             var done = Interlocked.Increment(ref finished);
             if (done % 40 == 0 || done == unique.Length) progress("download", "正在校验或下载游戏文件", done, unique.Length);
@@ -329,7 +454,7 @@ sealed class Minecraft
             p.Loader = J.Read(json);
             if (p.Loader == null) {
                 var endpoint = loader == "fabric" ? Fabric : Quilt;
-                p.Loader = await net.Json(endpoint + version + "/" + Uri.EscapeDataString(lver) + "/profile/json", ct);
+                p.Loader = await LoaderProfile(net, endpoint + version + "/" + Uri.EscapeDataString(lver) + "/profile/json", version, ct);
                 if (p.Loader.S("mainClass") == "" || p.Loader.S("inheritsFrom") != version) throw new IOException(loader + " 启动清单无效。");
                 J.Save(json, p.Loader);
             }
@@ -347,7 +472,7 @@ sealed class Minecraft
             return new FileJob { Target = J.Inside(Libraries, relative), Spec = artifact ?? J.Map("url", origin + "/" + relative,
                 "size", x.At("size"), "sha1", x.At("sha1"), "sha256", x.At("sha256"), "sha512", x.At("sha512")) };
         }).ToArray();
-        await Network.Pool(libraries.GroupBy(x => x.Target).Select(x => x.First()), 10, job => Fetch(net, job.Spec, job.Target, ct, checks), ct);
+        await net.Pool(libraries.GroupBy(x => x.Target).Select(x => x.First()), job => Fetch(net, job.Spec, job.Target, ct, checks), ct);
         var replaced = libraries.Select(x => Path.GetDirectoryName(Path.GetDirectoryName(x.Target))).ToArray();
         p.Classpath.RemoveAll(x => replaced.Contains(Path.GetDirectoryName(Path.GetDirectoryName(x)), StringComparer.OrdinalIgnoreCase));
         p.Classpath.InsertRange(0, libraries.Select(x => x.Target));
@@ -381,7 +506,7 @@ sealed class Minecraft
         progress("download", message, 0, jobs.Length);
         int done = 0;
         var progressLock = new object();
-        await Network.Pool(jobs, effective.I("concurrency", 12), async job => {
+        await net.Pool(jobs, async job => {
             try { await Fetch(net, job.Spec, job.Target, ct, checks).ConfigureAwait(false); }
             catch (Exception error) {
                 ct.ThrowIfCancellationRequested();
@@ -408,7 +533,7 @@ sealed class Minecraft
         if (isForge) progress("download", "正在准备 Forge 安装器", 0, 0);
         var sha = (await net.Text(url + ".sha1", ct)).Trim().Split((char[])null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
         if (sha == null || !Regex.IsMatch(sha, "^[a-fA-F0-9]{40}$")) throw new IOException("加载器安装器校验和无效。");
-        await net.FileTo(J.Map("url", url, "sha1", sha), installer, ct);
+        await net.FileTo(J.Map("url", url, "sha1", sha), installer, ct, MirrorFor(url));
         if (isForge) await PrepareForgeDependencies(net, installer, effective, progress, ct, checks);
         var profile = J.Inside(Game, "launcher_profiles.json");
         J.NoLinks(profile);

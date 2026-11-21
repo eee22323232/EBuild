@@ -52,6 +52,9 @@ sealed class Resources
         };
         if (input.S("version") != "") facets.Add(new[] {"versions:" + Short(input.S("version"),64)});
         if (new[] {"fabric","neoforge","forge","quilt"}.Contains(input.S("loader"))) facets.Add(new[] {"categories:" + input.S("loader")});
+        var category = input.S("category");
+        if (type == "mod" && Regex.IsMatch(category, @"\A[a-z][a-z-]{0,31}\z"))
+            facets.Add(new[] {"categories:" + category});
         var sort = input.S("sort");
         if (!new[] {"relevance","downloads","updated","newest"}.Contains(sort)) sort = "relevance";
         return Api(net,"/search?limit=20&query=" + Encode(Short(input.S("query"),150)) + "&index=" + sort + "&facets=" + Encode(J.Dump(facets)) +
@@ -267,7 +270,7 @@ sealed class Resources
                     throw new IOException("同名文件已存在：" + job.Part.Name);
             }
             var done = 0;
-            await Network.Pool(jobs,8,async x => {
+            await net.Pool(jobs,async x => {
                 if (!Network.Check(x.Dest,x.Part.Spec)) await net.FileTo(x.Part.Spec,x.Temp,ct);
                 progress("download","正在下载资源",Interlocked.Increment(ref done),jobs.Length);
             },ct);
@@ -310,10 +313,15 @@ sealed class Resources
         object index;
         using (var zip = ZipFile.OpenRead(file)) {
             var entry = zip.GetEntry("modrinth.index.json");
-            if (entry == null || entry.Length > 16 * 1024 * 1024) throw new IOException("整合包缺少有效清单。");
+            if (entry == null) {
+                if (zip.GetEntry("manifest.json") != null)
+                    throw new IOException("此 ZIP 包含 manifest.json。导入 Modrinth 整合包需要根目录中的 modrinth.index.json。");
+                throw new IOException("整合包根目录缺少 modrinth.index.json。完整游戏目录可解压后用「导入游戏文件夹」添加。");
+            }
+            if (entry.Length > 16 * 1024 * 1024) throw new IOException("整合包清单过大。");
             using (var reader = new StreamReader(entry.Open())) index = J.Parse(reader.ReadToEnd());
         }
-        if (index.I("formatVersion") != 1 || index.S("game") != "minecraft") throw new IOException("不支持该 .mrpack 格式。");
+        if (index.I("formatVersion") != 1 || index.S("game") != "minecraft") throw new IOException("不支持此 Modrinth 整合包的清单格式。");
         return index;
     }
 
@@ -329,6 +337,18 @@ sealed class Resources
             "loader",loader == null ? "vanilla" : packLoaders[loader],"loaderVersion",loader == null ? "" : deps.S(loader));
     }
 
+    static readonly HashSet<string> PackFileHosts = new HashSet<string>(new[] {
+        "cdn.modrinth.com", "github.com", "raw.githubusercontent.com", "gitlab.com",
+        "edge.forgecdn.net", "mediafilez.forgecdn.net"
+    }, StringComparer.OrdinalIgnoreCase);
+
+    internal static Uri PackDownloadUri(string value) {
+        Uri uri;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || uri.Scheme != "https" || !uri.IsDefaultPort ||
+            uri.UserInfo.Length != 0 || !PackFileHosts.Contains(uri.Host)) return null;
+        return uri;
+    }
+
     internal async Task<object> Pack(string file,Network net,Action<string,string,int,int> progress,CancellationToken ct, string downloadId = "") {
         var index = ReadPackIndex(file);
         return await backend.Add(PackSpec(index),
@@ -337,24 +357,22 @@ sealed class Resources
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var entry in entries) if (!seen.Add(J.Inside(dir,PackPath(entry.S("path"))))) throw new IOException("整合包里文件路径重复。");
                 var done = 0;
-                await Network.Pool(entries,12,async entry => {
+                await net.Pool(entries.OrderByDescending(entry => entry.I("fileSize")),async entry => {
                     var target=J.Inside(dir,PackPath(entry.S("path")));
                     var hash=entry.At("hashes").S("sha512");
                     long size;
                     if (!Regex.IsMatch(hash,"^[a-fA-F0-9]{128}$") || !long.TryParse(entry.S("fileSize"), out size) || size <= 0)
                         throw new IOException("整合包文件缺少校验信息：" + entry.S("path"));
-                    string failure = "未提供受支持的下载地址。";
-                    foreach (var value in entry.A("downloads")) {
-                        Uri uri;
-                        if (!Uri.TryCreate(value.S(),UriKind.Absolute,out uri) || uri.Scheme != "https" ||
-                            !new[] {"cdn.modrinth.com","github.com","raw.githubusercontent.com","gitlab.com"}.Contains(uri.Host)) continue;
-                        try {
-                            await net.FileTo(J.Map("url",uri.AbsoluteUri,"sha512",hash,"size",size,"sizeHint",true),target,ct);
-                            progress("download","正在下载整合包文件",Interlocked.Increment(ref done),entries.Length); return;
-                        } catch (IOException error) { failure = error.Message; }
-                        catch (System.Net.Http.HttpRequestException) { failure = "无法从 " + uri.Host + " 下载。"; }
+                    var urls = entry.A("downloads").Select(value => PackDownloadUri(value.S())).Where(uri => uri != null).ToArray();
+                    if (urls.Length == 0) throw new IOException("未提供受支持的下载地址：" + entry.S("path"));
+                    try {
+                        await net.FileTo(J.Map("url",urls[0].AbsoluteUri,"sha512",hash,"size",size,"sizeHint",true),target,ct,
+                            alternates: urls.Skip(1));
+                    } catch (Exception error) {
+                        if (!(error is IOException) && !(error is System.Net.Http.HttpRequestException)) throw;
+                        throw new IOException("整合包文件下载失败：" + entry.S("path") + "。" + error.Message, error);
                     }
-                    throw new IOException("整合包文件下载失败：" + entry.S("path") + "。" + failure);
+                    progress("download","正在下载整合包文件",Interlocked.Increment(ref done),entries.Length);
                 },ct);
                 int overrideCount;
                 using (var archive = ZipFile.OpenRead(file)) overrideCount = archive.Entries.Count(entry =>

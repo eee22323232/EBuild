@@ -87,6 +87,33 @@ sealed partial class Backend
         if (value == null) throw new IOException("实例不存在。");
         return J.Merge(value, J.Map("id", id));
     }
+    object SaveInstance(string id, object changes) {
+        var updated = J.Merge(Instance(id), changes);
+        updated.Remove("id");
+        J.Save(J.Inside(InstanceRecord(id), ".ebuild.json"), updated);
+        return J.Merge(updated, J.Map("id", id));
+    }
+    internal Task<Dictionary<string,int>> InstanceModCounts(object[] items) {
+        var root = Root;
+        return Task.Run(() => {
+            var counts = new Dictionary<string,int>();
+            foreach (var item in items) {
+                if (item.B("externalMissing")) continue;
+                string id = item.S("id");
+                try {
+                    string directory = item.S("externalPath");
+                    if (directory == "") directory = J.Inside(root, "instances/" + J.Id(id));
+                    string mods = J.Inside(directory, "mods");
+                    J.NoLinks(mods);
+                    counts[id] = Directory.Exists(mods) ? Directory.EnumerateFiles(mods, "*.jar")
+                        .Count(path => Path.GetExtension(path).Equals(".jar", StringComparison.OrdinalIgnoreCase)) : 0;
+                } catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                catch (InvalidOperationException) { }
+            }
+            return counts;
+        });
+    }
     object Save(object delta) {
         var next = J.Merge(settings, delta);
         var node = next.S("lanNode").Trim();
@@ -119,9 +146,13 @@ sealed partial class Backend
         if (!new[] {"","G1","Z","Parallel","Serial"}.Contains(x.S("gc"))) throw new IOException("垃圾回收器设置无效。");
         return x;
     }
-    static Dictionary<string,object> Spec(object input) {
-        var name = input.S("name").Trim();
+    static string InstanceName(string name) {
+        name = name.Trim();
         if (name.Length == 0 || name.Length > 80) throw new IOException("实例名称需为 1–80 字符。");
+        return name;
+    }
+    static Dictionary<string,object> Spec(object input) {
+        var name = InstanceName(input.S("name"));
         var loader = input.S("loader");
         if (!Minecraft.SupportsLoader(loader)) throw new IOException("不支持该加载器。");
         return J.Map("name",name,"version",J.Id(input.S("version")),"loader",loader,
@@ -238,8 +269,18 @@ sealed partial class Backend
         var process = await Task.Run(() => minecraft.Launch(net, instance, baseSpec, dir, effective, account, java, progress, ct,
             beforeStart, room == null ? "" : room.Address), ct);
         games.Track(id, dir, process, InstanceRecord(id));
+        RecordInstanceLaunch(id);
         if (!Leaving && effective.S("afterLaunch") == "minimize") window.Minimize();
         return true;
+    }
+    void RecordInstanceLaunch(string id) {
+        var timestamp = DateTime.UtcNow.ToString("o");
+        try { SaveInstance(id, J.Map("lastLaunch", timestamp)); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        catch (InvalidOperationException) { }
+        catch (ArgumentException) { }
+        notify(J.Map("instanceStarted", id, "lastLaunch", timestamp));
     }
 
     internal bool HasGameWork { get { return games.Count > 0 || preparing != null || launchQueue.Count > 0; } }
@@ -336,19 +377,25 @@ sealed partial class Backend
                 var candidates = InspectExternal(path);
                 return J.Map("kind", "folder", "source", candidates[0].S("externalSource"), "choices", candidates);
             }
-            if (File.Exists(path) && String.Equals(Path.GetExtension(path), ".mrpack", StringComparison.OrdinalIgnoreCase)) {
+            if (File.Exists(path) && IsPackArchive(path)) {
                 var pack = PackFile(path);
                 return J.Map("kind", "pack", "source", pack, "instance", Spec(Resources.PackSpec(Resources.ReadPackIndex(pack))));
             }
-            throw new IOException("请拖入 Minecraft 游戏文件夹或 .mrpack 整合包。");
+            throw new IOException("请拖入 Minecraft 游戏文件夹或 Modrinth 整合包（.mrpack / .zip）。");
         });
+    }
+
+    static bool IsPackArchive(string path) {
+        string extension = Path.GetExtension(path);
+        return String.Equals(extension, ".mrpack", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(extension, ".zip", StringComparison.OrdinalIgnoreCase);
     }
 
     static string PackFile(string path) {
         var pack = Path.GetFullPath(path);
         J.NoLinks(pack);
-        if (!File.Exists(pack) || !String.Equals(Path.GetExtension(pack), ".mrpack", StringComparison.OrdinalIgnoreCase))
-            throw new IOException("请选择有效的 Modrinth .mrpack 整合包。");
+        if (!File.Exists(pack) || !IsPackArchive(pack))
+            throw new IOException("请选择有效的 Modrinth 整合包（.mrpack / .zip）。");
         return pack;
     }
 
@@ -450,6 +497,8 @@ sealed partial class Backend
             case "settings:save": return Save(a.Arg(0).Obj().Where(x => settings.ContainsKey(x.Key) && x.Key != "selected" && x.Key != "dataRoot").ToDictionary(x=>x.Key,x=>x.Value));
             case "instances:list": return Instances().ToArray();
             case "instances:select": Instance(id); return Save(J.Map("selected",id));
+            case "instances:pin": return SaveInstance(id, J.Map("pinned", Object.Equals(a.Arg(1), true)));
+            case "instances:rename": return SaveInstance(id, J.Map("name", InstanceName(a.Arg(1).S())));
             case "instances:folder": Instance(id); return Open(InstancePath(id));
             case "instances:mods-folder": Instance(id); return Open(Path.Combine(InstancePath(id),"mods"));
             case "instances:resources":
@@ -568,7 +617,7 @@ sealed partial class Backend
                 return true;
             case "task:cancel": if (task != null) task.Cancel(); return null;
             case "catalog": using (var net = new Network(settings)) return await minecraft.Catalog(net, CancellationToken.None, Object.Equals(a.Arg(0), true));
-            case "loaders": using (var net = new Network(settings)) return await minecraft.Loaders(net,id,a.Arg(1).S(),CancellationToken.None);
+            case "loaders": using (var net = new Network(settings)) return await minecraft.Loaders(net, id, a.Arg(1).S(), CancellationToken.None, Object.Equals(a.Arg(2), true));
             case "data:choose": return Folder("选择游戏数据目录",Root);
             case "data:open": return Open(Root);
             case "data:cache": throw new IOException("请在空间管理中选择清理项目并确认。");
@@ -617,6 +666,12 @@ sealed partial class Backend
                 p("download","正在刷新正版档案",0,0);
                 return await accounts.RefreshProfile(n,t);
             });
+            case "account:change-name":
+                return await Job((n,p,t) => accounts.ChangeName(n, id, a.Arg(1).S(), t));
+            case "account:change-skin":
+                return await Job((n,p,t) => accounts.ChangeSkin(n, id, a.Arg(1) as byte[], a.Arg(2).S(), t));
+            case "account:change-cape":
+                return await Job((n,p,t) => accounts.ChangeCape(n, id, a.Arg(1).S(), t));
             case "account:appearance": return appearance.Summary();
             case "account:appearance-import":
                 if (id != "skin" && id != "cape") throw new IOException("请选择皮肤或披风。");
@@ -634,7 +689,7 @@ sealed partial class Backend
             case "resources:open-link": return Web(id);
             case "resources:copy-name": if (id.Length == 0 || id.Length > 300) throw new IOException("名称无效。"); Clipboard.SetText(id); return true;
             case "resources:import":
-                var pack = id == "" ? ChooseFile("导入 Modrinth 整合包","Modrinth 整合包|*.mrpack") : id;
+                var pack = id == "" ? ChooseFile("导入 Modrinth 整合包","Modrinth 整合包|*.mrpack;*.zip") : id;
                 if (pack != "") pack = PackFile(pack);
                 return pack == "" ? null : await CreatePackDownload(pack, null, "");
             default:
