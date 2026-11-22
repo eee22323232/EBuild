@@ -2,6 +2,14 @@ name: Windows WPF packages
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/windows-installer.yml
+      - scripts/wpf/**
+      - scripts/webview2-trial/**
+      - LICENSE
   push:
     branches:
       - main
