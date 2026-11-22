@@ -52,6 +52,10 @@ jobs:
           $launcher = Join-Path $env:RUNNER_TEMP 'EBuild-build\stage\EBuild-WPF.exe'
           dotnet run --configuration Release --project scripts/wpf/verify/EBuild.Wpf.Verification.csproj -- $launcher
 
+      - name: Verify Windows installation, updates and rollback
+        shell: powershell
+        run: .\scripts\wpf\verify\verify-update.ps1 -BuildOutput (Join-Path $env:RUNNER_TEMP 'EBuild-build')
+
       - name: Upload WPF packages and checksums
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:

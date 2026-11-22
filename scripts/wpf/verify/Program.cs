@@ -16,6 +16,7 @@ static class Program
 {
     [STAThread]
     static int Main(string[] args) {
+        if (args.Length != 0 && args[0].StartsWith("--", StringComparison.Ordinal)) return UpdateProbe.Run(args);
         if (args.Length != 1) {
             Console.Error.WriteLine("Pass the path of the built EBuild-WPF.exe.");
             return 2;

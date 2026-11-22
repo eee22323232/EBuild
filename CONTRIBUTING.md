@@ -58,6 +58,12 @@ Remove-Item Env:EBUILD_CSHARP_PROFILE
 .\scripts\wpf\package.ps1 -Output .\dist\wpf -Iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
 ~~~
 
+打包后可以在没有安装 WPF 版的 Windows 测试账户运行以下命令。脚本会在临时目录实际安装和解压两个版本，模拟发布源，验证应用内升级、启动失败回滚、校验拦截和卸载。打包工作流也会运行它。
+
+~~~powershell
+.\scripts\wpf\verify\verify-update.ps1 -BuildOutput .\dist\wpf
+~~~
+
 发布前提高 [项目文件](scripts/wpf/EBuild.Wpf.csproj)中的 `WpfReleaseVersion`。在 GitHub Releases 使用对应的 `dev.X.Y.Z` 标签，并附上 `assets` 目录下的安装器、ZIP 和 `WPF-SHA256SUMS.txt`。点击应用内更新时，两种安装方式都使用同一个 ZIP 替换启动器文件。Windows 安装记录中的版本号由安装器写入，应用内显示的是当前程序版本。
 
 「设置 → 启动器设置」里的更新面板同时显示源码提交。EXE 的「产品版本」包含完整提交哈希，工作区有本地改动时，应用内会标出。
