@@ -11,7 +11,7 @@ namespace EBuild.Native
     public partial class Launcher
     {
         async Task SetInstancePinned(string id, bool pinned) {
-            await Call("instances:pin", id, pinned);
+            backend.SetInstancePinned(id, pinned);
             await RefreshInstances();
             RenderInstanceLibrary();
             Say(pinned ? "实例已置顶" : "已取消置顶");
@@ -21,9 +21,9 @@ namespace EBuild.Native
             var name = Input(instance.S("name"), 80);
             var dialog = new TaskDialog(this, "重命名实例", Stack(Field("实例名称", name)));
             dialog.Loaded += (_, __) => { name.Focus(); name.SelectAll(); };
-            if (await dialog.Result("保存", async () => {
-                await Call("instances:rename", instance.S("id"), name.Text);
-                return true;
+            if (await dialog.Result("保存", () => {
+                backend.RenameInstance(instance.S("id"), name.Text);
+                return Task.FromResult(true);
             }) != true) return;
             await RefreshInstances();
             RenderInstanceLibrary();
@@ -121,7 +121,8 @@ namespace EBuild.Native
             });
             if (await dialog.Result(remove ? "移除实例" : "永久删除", confirmation: typed, exact: name,
                 cancelByDefault: typed == null) != true) return;
-            if (await RunJob("instances:delete", id, typed?.Text ?? name, remove ? "remove" : original ? "original" : "") == null) return;
+            var mode = remove ? InstanceDeletion.ExternalRecord : original ? InstanceDeletion.ExternalFiles : InstanceDeletion.ManagedFiles;
+            if (!await RunJob(() => backend.DeleteInstance(id, typed?.Text ?? name, mode))) return;
             await RefreshInstances();
             if (route == "instance" || route == "instances") ShowInstances();
             else if (route == "home") UpdateHomeCard();

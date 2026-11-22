@@ -144,10 +144,12 @@ namespace EBuild.Native
             catch (Exception error) { Say(error.GetBaseException().Message); }
         }
 
-        async Task<object> RunJob(string key, params object[] args) {
+        Task<object> RunJob(string key, params object[] args) => RunJob(() => Call(key, args));
+
+        async Task<T> RunJob<T>(Func<Task<T>> work) {
             if (jobActive || mutations != 0 || leaving) throw new IOException("请等待当前任务结束。");
             mutations++;
-            try { return await Call(key, args); }
+            try { return await work(); }
             finally { mutations--; }
         }
 
@@ -304,25 +306,26 @@ namespace EBuild.Native
 
         async Task RefreshInstances() {
             settings = await Call("settings:get");
-            instances = (await Call("instances:list")).A();
+            instances = backend.Instances().ToArray();
             selected = settings.S("selected");
             if (Active == null) selected = instances.FirstOrDefault().S("id");
         }
 
-        async Task RefreshExternalPaths() {
-            if (checkingExternal || !instances.Any(item => item.S("externalPath") != "")) return;
+        Task RefreshExternalPaths() {
+            if (checkingExternal || !instances.Any(item => item.S("externalPath") != "")) return Task.CompletedTask;
             checkingExternal = true;
             try {
-                var updated = (await Call("instances:list")).A();
+                var updated = backend.Instances().ToArray();
                 bool changed = J.Dump(updated.Select(item => new[] { item.S("id"), item.S("externalMissing") }).ToArray()) !=
                     J.Dump(instances.Select(item => new[] { item.S("id"), item.S("externalMissing") }).ToArray());
-                if (!changed) return;
+                if (!changed) return Task.CompletedTask;
                 instances = updated;
                 if (Active == null) selected = instances.FirstOrDefault().S("id");
                 if (route == "instances") ShowInstances();
                 if (route == "home") UpdateHomeCard();
                 UpdateLan();
             } finally { checkingExternal = false; }
+            return Task.CompletedTask;
         }
 
         async Task ViewInstance(string id) {
@@ -334,12 +337,13 @@ namespace EBuild.Native
             ShowInstances();
         }
 
-        async Task SelectInstance(string id) {
-            await Call("instances:select", id);
+        Task SelectInstance(string id) {
+            backend.SelectInstance(id);
             bool changed = selected != id;
             selected = id;
             UpdateHomeCard(changed);
             UpdateLan();
+            return Task.CompletedTask;
         }
 
         protected override void OnClosing(CancelEventArgs e) {

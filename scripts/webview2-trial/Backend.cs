@@ -8,6 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
+enum InstanceDeletion { ManagedFiles, ExternalRecord, ExternalFiles }
+
 sealed partial class Backend
 {
     readonly LauncherWindow window;
@@ -93,6 +95,17 @@ sealed partial class Backend
         J.Save(J.Inside(InstanceRecord(id), ".ebuild.json"), updated);
         return J.Merge(updated, J.Map("id", id));
     }
+    internal object SelectInstance(string id) {
+        Instance(id);
+        return Save(J.Map("selected", id));
+    }
+    internal object SetInstancePinned(string id, bool pinned) {
+        return SaveInstance(id, J.Map("pinned", pinned));
+    }
+    internal object RenameInstance(string id, string name) {
+        return SaveInstance(id, J.Map("name", InstanceName(name)));
+    }
+
     internal Task<Dictionary<string,int>> InstanceModCounts(object[] items) {
         var root = Root;
         return Task.Run(() => {
@@ -438,16 +451,16 @@ sealed partial class Backend
             throw new IOException("这个文件夹里的该版本已经导入。");
     }
 
-    async Task<object> DeleteInstance(string id, string confirmedName, string mode) {
+    internal async Task<bool> DeleteInstance(string id, string confirmedName, InstanceDeletion mode) {
         RequireIdleInstance(id);
         var instance = Instance(id);
         var external = instance.S("externalPath") != "";
-        var removeOnly = external && mode == "remove";
-        if ((external && !removeOnly && mode != "original") || (!external && mode != ""))
+        var removeOnly = mode == InstanceDeletion.ExternalRecord;
+        if (external ? !removeOnly && mode != InstanceDeletion.ExternalFiles : mode != InstanceDeletion.ManagedFiles)
             throw new IOException("删除方式无效。");
         if (confirmedName != instance.S("name")) throw new IOException("请输入与实例名称完全一致的内容。");
         var path = InstanceRecord(id);
-        return await Job(async (n,p,t) => {
+        var result = await Job(async (n,p,t) => {
             deleting = id;
             try {
                 p("deleting", (removeOnly ? "正在移除 " : "正在删除 ") + instance.S("name"), 0, 0);
@@ -482,6 +495,7 @@ sealed partial class Backend
                 return true;
             } finally { deleting = null; }
         });
+        return Object.Equals(result, true);
     }
 
     static void DeleteDirectory(string path) {
@@ -496,9 +510,9 @@ sealed partial class Backend
             case "settings:get": return J.Merge(settings,J.Map("currentRoot",Root,"defaultRoot",defaultRoot,"version","dev.0.1.2 · WebView2 + C#"));
             case "settings:save": return Save(a.Arg(0).Obj().Where(x => settings.ContainsKey(x.Key) && x.Key != "selected" && x.Key != "dataRoot").ToDictionary(x=>x.Key,x=>x.Value));
             case "instances:list": return Instances().ToArray();
-            case "instances:select": Instance(id); return Save(J.Map("selected",id));
-            case "instances:pin": return SaveInstance(id, J.Map("pinned", Object.Equals(a.Arg(1), true)));
-            case "instances:rename": return SaveInstance(id, J.Map("name", InstanceName(a.Arg(1).S())));
+            case "instances:select": return SelectInstance(id);
+            case "instances:pin": return SetInstancePinned(id, Object.Equals(a.Arg(1), true));
+            case "instances:rename": return RenameInstance(id, a.Arg(1).S());
             case "instances:folder": Instance(id); return Open(InstancePath(id));
             case "instances:mods-folder": Instance(id); return Open(Path.Combine(InstancePath(id),"mods"));
             case "instances:resources":
@@ -542,7 +556,15 @@ sealed partial class Backend
                 if (old.S("externalPath") == "") throw new IOException("只有外部实例支持重新定位。");
                 var replacement = Folder("重新定位 Minecraft 游戏文件夹", old.S("externalSource"));
                 return replacement == "" ? null : await ImportExternal(replacement, "", id);
-            case "instances:delete": return await DeleteInstance(id, a.Arg(1).S(), a.Arg(2).S());
+            case "instances:delete":
+                InstanceDeletion mode;
+                switch (a.Arg(2).S()) {
+                    case "": mode = InstanceDeletion.ManagedFiles; break;
+                    case "remove": mode = InstanceDeletion.ExternalRecord; break;
+                    case "original": mode = InstanceDeletion.ExternalFiles; break;
+                    default: throw new IOException("删除方式无效。");
+                }
+                return await DeleteInstance(id, a.Arg(1).S(), mode) ? (object)true : null;
             case "instances:verify": return await Job(async (n,p,t) => {
                 RequireIdleInstance(id);
                 var instance = Instance(id);

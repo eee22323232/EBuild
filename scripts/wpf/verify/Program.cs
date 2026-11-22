@@ -98,11 +98,10 @@ static class Program
         Button[] Rows() => Descendants<Button>(launcher).Where(item => item.IsVisible && item.ContextMenu != null &&
             AutomationProperties.GetName(item).Contains("同名")).ToArray();
         await WaitFor(() => Rows().Length == 2, "Instance search should find both duplicates.");
-        var row = Rows().Single(item => AutomationProperties.GetName(item).Contains("同名 1"));
-        Action requestDelete = () => row.ContextMenu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "删除游戏"))
-            .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        Button FirstDuplicate() => Rows().Single(item => AutomationProperties.GetName(item).Contains("同名 1"));
+        void RequestDelete() => ClickMenu(FirstDuplicate(), "删除游戏");
         Window Prompt() => Application.Current.Windows.Cast<Window>().SingleOrDefault(item => item.Title == "永久删除游戏");
-        requestDelete();
+        RequestDelete();
         await WaitFor(() => Prompt() != null && Descendants<TextBlock>(Prompt()).Any(item => item.Text.Contains("2 个模组")),
             "Delete confirmation did not identify the exact duplicate.");
         var cancel = Descendants<Button>(Prompt()).Single(item => Equals(item.Content, "取消"));
@@ -110,13 +109,24 @@ static class Program
         Click(cancel);
         await WaitFor(() => Prompt() == null, "Cancel did not dismiss the delete confirmation.");
         Require(File.Exists(first) && File.Exists(second), "Cancel must preserve both instances.");
-        requestDelete();
+        ClickMenu(FirstDuplicate(), "置顶");
+        await WaitFor(() => File.ReadAllText(first).Contains("\"pinned\":true") && Rows().Length == 2,
+            "Pinning should persist without clearing the search.");
+        RequestDelete();
         await WaitFor(() => Prompt() != null, "Delete confirmation did not reopen.");
         Click(Descendants<Button>(Prompt()).Single(item => Equals(item.Content, "永久删除")));
         await WaitFor(() => !File.Exists(first) && Descendants<TextBlock>(launcher).Any(item => item.Text == "游戏已删除"),
             "Confirmed deletion did not finish.");
         Require(File.Exists(second), "The other identically named instance must be preserved.");
-        Console.WriteLine("PASS: instance search, duplicate identity, cancel, and precise deletion.");
+        var surviving = Descendants<Button>(launcher).Single(item => item.IsVisible && item.ContextMenu != null &&
+            AutomationProperties.GetName(item).StartsWith("26.1.2 Fabric", StringComparison.Ordinal));
+        ClickMenu(surviving, "重命名");
+        Window RenameDialog() => Application.Current.Windows.Cast<Window>().SingleOrDefault(item => item.Title == "重命名实例");
+        await WaitFor(() => RenameDialog() != null && Descendants<TextBox>(RenameDialog()).Any(), "Rename did not open.");
+        Descendants<TextBox>(RenameDialog()).Single().Text = "模组测试";
+        Click(Descendants<Button>(RenameDialog()).Single(item => Equals(item.Content, "保存")));
+        await WaitFor(() => RenameDialog() == null && File.ReadAllText(second).Contains("\"name\":\"模组测试\""), "Rename was not saved.");
+        Console.WriteLine("PASS: instance search, pin, rename, duplicate identity, cancel, and precise deletion.");
     }
 
     static string WriteInstance(string data, string id, string name, string version, string loader, int mods) {
@@ -155,6 +165,9 @@ static class Program
     }
 
     static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+    static void ClickMenu(Button row, string label) => row.ContextMenu.Items.OfType<MenuItem>()
+        .Single(item => Equals(item.Header, label)).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
 
     static void Require(bool condition, string message) {
         if (!condition) throw new InvalidOperationException(message);
